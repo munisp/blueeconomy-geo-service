@@ -1,5 +1,5 @@
 // Integration tests for the device-management plane against real
-// Postgres+PostGIS (migrations 0001-0009), gated by GEO_TEST_PG_DSN /
+// Postgres+PostGIS (migrations 0001-0010), gated by GEO_TEST_PG_DSN /
 // GEO_TEST_REDIS_ADDR like the pipeline suite; Kafka assertions activate
 // when GEO_TEST_KAFKA_BROKERS is set (real producer + consumer for the
 // telemetry DLQ), otherwise the recording stub captures publications.
