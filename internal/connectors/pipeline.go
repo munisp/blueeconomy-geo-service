@@ -149,6 +149,13 @@ func (pipeline *Pipeline) HandlePosition(ctx context.Context, ingest IngestPosit
 	}
 
 	// 4. Persist (partitioned hot table + latest upsert) before publishing.
+	// Provision the observed day on demand: late-arriving AIS, store-forward
+	// tracker flushes and replayed fixtures can carry observation times
+	// outside the pre-provisioned today/tomorrow window, and inserts into an
+	// unprovisioned day fail closed (no default partition).
+	if err := pipeline.Store.EnsurePositionPartitions(ctx, position.ObservedAt); err != nil {
+		return fmt.Errorf("provision partition for %s: %w", position.ObservedAt.UTC().Format("2006-01-02"), err)
+	}
 	if err := pipeline.Store.InsertPositions(ctx, []store.Position{position}); err != nil {
 		return err
 	}

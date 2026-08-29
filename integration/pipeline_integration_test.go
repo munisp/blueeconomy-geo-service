@@ -215,20 +215,23 @@ func TestGeofenceEnterExit(t *testing.T) {
 	}, zonePolygon))
 	require.NoError(t, h.store.ApproveZone(ctx, testTenant, testZoneID, "itest-checker"))
 
+	// Observation times are spaced 30 minutes apart so every displacement is
+	// physically plausible (the consecutive-report tracker quarantines
+	// implied speeds above 60 kn as same-MMSI bifurcation spoofs).
 	// Outside the box: no events.
 	outside := itestPosition("itest-pos-out", 6400000, 3400000)
 	require.NoError(t, h.pipeline.HandlePosition(ctx, outside))
 	// Inside the box: ENTER.
 	inside := itestPosition("itest-pos-in", 6418000, 3372500)
-	inside.Position.ObservedAt = inside.Position.ObservedAt.Add(time.Minute)
+	inside.Position.ObservedAt = inside.Position.ObservedAt.Add(30 * time.Minute)
 	require.NoError(t, h.pipeline.HandlePosition(ctx, inside))
 	// Still inside: no new event.
 	inside2 := itestPosition("itest-pos-in2", 6419000, 3372600)
-	inside2.Position.ObservedAt = inside.Position.ObservedAt.Add(2 * time.Minute)
+	inside2.Position.ObservedAt = inside.Position.ObservedAt.Add(30 * time.Minute)
 	require.NoError(t, h.pipeline.HandlePosition(ctx, inside2))
 	// Back outside: EXIT.
 	outside2 := itestPosition("itest-pos-out2", 6400000, 3400000)
-	outside2.Position.ObservedAt = inside.Position.ObservedAt.Add(3 * time.Minute)
+	outside2.Position.ObservedAt = inside.Position.ObservedAt.Add(30 * time.Minute)
 	require.NoError(t, h.pipeline.HandlePosition(ctx, outside2))
 
 	rows, err := h.store.Pool().Query(ctx,
@@ -244,8 +247,10 @@ func TestGeofenceEnterExit(t *testing.T) {
 	require.Equal(t, []string{"ENTER", "EXIT"}, events)
 
 	// Signed geofence envelopes were published with the zone classification
-	// floor when the recorder is active.
-	if h.recorder != nil {
+	// floor. This is only assertable when the recording stub is the
+	// publisher (GEO_TEST_KAFKA_BROKERS unset); with a real broker the
+	// envelopes are verified by the Kafka consumer path instead.
+	if _, usingRecorder := h.publisher.(*recorder); usingRecorder {
 		published := h.recorder.byTopic(bus.TopicVesselEvents)
 		geofenceEvents := make([]map[string]any, 0)
 		for _, message := range published {

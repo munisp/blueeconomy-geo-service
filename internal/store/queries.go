@@ -257,9 +257,10 @@ func (store *Store) CreateZone(ctx context.Context, tenantID string, zone ZoneRo
 		return errors.New("zone classification floor is invalid")
 	}
 	return store.WithTenant(ctx, tenantID, func(tx pgx.Tx) error {
+		// PostGIS 3.3 has no ST_GeogFromGeoJSON — parse as geometry and cast.
 		if _, err := tx.Exec(ctx, `INSERT INTO geofence_zones
 			(zone_id, tenant_id, name, geom, classification_floor, state, maker_principal_id)
-			VALUES ($1, $2, $3, ST_GeogFromGeoJSON($4)::geography, $5, 'draft', $6)`,
+			VALUES ($1, $2, $3, ST_GeomFromGeoJSON($4)::geography, $5, 'draft', $6)`,
 			zone.ZoneID, tenantID, zone.Name, polygonGeoJSON, zone.ClassificationFloor, zone.MakerPrincipalID); err != nil {
 			return fmt.Errorf("create zone %s: %w", zone.ZoneID, err)
 		}
