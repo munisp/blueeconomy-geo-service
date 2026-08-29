@@ -439,6 +439,9 @@ func (api *API) ingestTelemetry(writer http.ResponseWriter, request *http.Reques
 		writeDeviceError(writer, http.StatusInternalServerError, "device authentication unavailable")
 		return
 	}
+	// The verified device identity is bound into the request context for
+	// the ingest path — downstream code never trusts a caller-supplied id.
+	request = request.WithContext(WithDevice(request.Context(), verified))
 	switch envelope.PayloadType {
 	case sign.EventVesselPosition:
 		var payload sign.VesselPositionReported

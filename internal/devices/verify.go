@@ -68,6 +68,21 @@ type VerifiedDevice struct {
 	KeyEpoch int
 }
 
+type deviceContextKey struct{}
+
+// WithDevice attaches the verified device identity to the context (the
+// ingest paths read it back instead of trusting any caller-supplied id).
+func WithDevice(ctx context.Context, verified VerifiedDevice) context.Context {
+	return context.WithValue(ctx, deviceContextKey{}, verified)
+}
+
+// DeviceFrom returns the verified device identity; ok is false when the
+// request was not device-authenticated (handlers must fail closed).
+func DeviceFrom(ctx context.Context) (VerifiedDevice, bool) {
+	verified, ok := ctx.Value(deviceContextKey{}).(VerifiedDevice)
+	return verified, ok && verified.Device.ID != ""
+}
+
 // VerifyTelemetry authenticates one posted telemetry envelope for the
 // device named in the URL path. On success the verified envelope and the
 // device context are returned; on rejection an *AuthError carries the
