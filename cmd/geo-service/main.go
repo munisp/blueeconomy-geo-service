@@ -31,6 +31,7 @@ import (
 	"github.com/munisp/blueeconomy-geo-service/internal/config"
 	"github.com/munisp/blueeconomy-geo-service/internal/connectors"
 	"github.com/munisp/blueeconomy-geo-service/internal/dedup"
+	"github.com/munisp/blueeconomy-geo-service/internal/devices"
 	"github.com/munisp/blueeconomy-geo-service/internal/gtfsrt"
 	"github.com/munisp/blueeconomy-geo-service/internal/metrics"
 	"github.com/munisp/blueeconomy-geo-service/internal/sign"
@@ -197,9 +198,30 @@ func run(logger *log.Logger) error {
 			return err
 		}
 		appReports := &connectors.AppReportHandler{Pipeline: pipeline}
+		apiHandler := server.Handler(authenticator, appReports.RegisterRoutes)
+		// === BEGIN phase7 device-management plane (internal/devices) ===
+		// Mounted OUTSIDE the platform principal middleware: the device
+		// endpoints authenticate by Ed25519 signed envelope/proof. Admin
+		// routes wrap the authenticator per-route inside the device mux.
+		// The plane is env-gated (GEO_DEVICES_PG_DSN); absent it, /v1/devices/*
+		// does not exist (fail closed).
+		if deviceHandler, derr := buildDevicePlane(cfg, storage, pipeline, producer, registry, authenticator, signer); derr != nil {
+			return derr
+		} else if deviceHandler != nil {
+			geoHandler := apiHandler
+			apiHandler = http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+				if strings.HasPrefix(request.URL.Path, "/v1/devices/") ||
+					strings.HasPrefix(request.URL.Path, "/v1/device-provisioning/") {
+					deviceHandler.ServeHTTP(writer, request)
+					return
+				}
+				geoHandler.ServeHTTP(writer, request)
+			})
+		}
+		// === END phase7 device-management plane ===
 		httpServer := &http.Server{
 			Addr:              cfg.APIAddr,
-			Handler:           server.Handler(authenticator, appReports.RegisterRoutes),
+			Handler:           apiHandler,
 			ReadHeaderTimeout: 10 * time.Second,
 			ReadTimeout:       30 * time.Second,
 			WriteTimeout:      60 * time.Second,
@@ -229,6 +251,59 @@ func run(logger *log.Logger) error {
 		}
 		return nil
 	}
+}
+
+// === BEGIN phase7 device-management plane (internal/devices) ===
+// buildDevicePlane wires the device-management plane when
+// GEO_DEVICES_PG_DSN is set (geo_devices role connection for the
+// verify-at-ingest path — privilege separation by connection, never by
+// SET ROLE). Returns (nil, nil) when the plane is disabled. It fails
+// closed on any misconfiguration of an enabled plane.
+func buildDevicePlane(_ config.Config, storage *store.Store, pipeline *connectors.Pipeline,
+	producer *bus.Producer, registry *metrics.Registry, authenticator auth.Authenticator,
+	signer *sign.Signer) (http.Handler, error) {
+	devicesDSN := strings.TrimSpace(os.Getenv("GEO_DEVICES_PG_DSN"))
+	if devicesDSN == "" {
+		return nil, nil
+	}
+	grace := devices.DefaultKeyGrace
+	if raw := strings.TrimSpace(os.Getenv("GEO_DEVICE_KEY_GRACE")); raw != "" {
+		parsed, err := time.ParseDuration(raw)
+		if err != nil || parsed <= 0 {
+			return nil, errors.New("GEO_DEVICE_KEY_GRACE must be a positive duration")
+		}
+		grace = parsed
+	}
+	deviceStore, err := devices.NewStore(context.Background(), storage, devicesDSN)
+	if err != nil {
+		return nil, err
+	}
+	verifier, err := devices.NewVerifier(deviceStore, registry, grace)
+	if err != nil {
+		return nil, err
+	}
+	// OTA manifests are signed with the same service envelope key (already
+	// validated at startup) under the service kid.
+	manifestKey, err := sign.ParsePrivateKey(os.Getenv(sign.SigningKeyEnv))
+	if err != nil {
+		return nil, err
+	}
+	deviceAPI, err := devices.NewAPI(&devices.API{
+		Store:         deviceStore,
+		Verifier:      verifier,
+		Metrics:       registry,
+		Events:        pipeline,
+		DeadLetters:   producer,
+		ManifestKey:   manifestKey,
+		ManifestKeyID: signer.KeyID(),
+		Grace:         grace,
+	})
+	if err != nil {
+		return nil, err
+	}
+	mux := http.NewServeMux()
+	deviceAPI.RegisterRoutes(mux, authenticator)
+	return mux, nil
 }
 
 // buildAuthenticator wires the configured auth mode (Keycloak RS256 OIDC or
