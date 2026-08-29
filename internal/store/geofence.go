@@ -7,6 +7,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -121,10 +122,30 @@ func (state *ZoneStateStore) Replace(ctx context.Context, vesselKey string, zone
 	return nil
 }
 
-// ZonesContaining returns the approved zones intersecting the point, in the
-// platform-wide ingest context (app.tenant_id unset — see 0004_rls.sql).
-func (store *Store) ZonesContaining(ctx context.Context, latitudeMicros, longitudeMicros int32) ([]Zone, error) {
-	rows, err := store.pool.Query(ctx, `SELECT zone_id, tenant_id, name, classification_floor
+// withIngestRole runs fn inside a transaction whose role is the explicit
+// platform-wide ingest role geo_ingest (0007_rls_default_deny.sql). The
+// geofence evaluator is the only platform-wide reader/writer: the
+// application role is default-deny when app.tenant_id is unset.
+func (store *Store) withIngestRole(ctx context.Context, fn func(tx pgx.Tx) error) error {
+	tx, err := store.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin ingest transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, `SET LOCAL ROLE geo_ingest`); err != nil {
+		return fmt.Errorf("assume geo_ingest role: %w", err)
+	}
+	if err := fn(tx); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+// zonesContaining returns the approved zones intersecting the point. It
+// runs as geo_ingest inside withIngestRole — the only platform-wide zone
+// read path.
+func zonesContaining(ctx context.Context, tx pgx.Tx, latitudeMicros, longitudeMicros int32) ([]Zone, error) {
+	rows, err := tx.Query(ctx, `SELECT zone_id, tenant_id, name, classification_floor
 		FROM geofence_zones
 		WHERE state = 'approved' AND ST_Intersects(geom, ST_GeogFromText($1))`,
 		pointWKT(latitudeMicros, longitudeMicros))
@@ -146,7 +167,8 @@ func (store *Store) ZonesContaining(ctx context.Context, latitudeMicros, longitu
 // EvaluateGeofences computes enter/exit transitions for one vessel position
 // against approved zones, updates the Redis zone state, persists the
 // geofence events and returns them for signed publication. Event
-// classification starts at the zone's classification floor.
+// classification starts at the zone's classification floor. All database
+// work runs as the explicit geo_ingest role in one transaction.
 func (store *Store) EvaluateGeofences(ctx context.Context, state *ZoneStateStore, position Position, eventID func() string) ([]GeofenceEvent, error) {
 	if state == nil {
 		return nil, errors.New("zone state store is required")
@@ -158,73 +180,78 @@ func (store *Store) EvaluateGeofences(ctx context.Context, state *ZoneStateStore
 	if vesselKey == "" {
 		return nil, errors.New("geofence evaluation requires a vessel identity")
 	}
-	zones, err := store.ZonesContaining(ctx, position.LatitudeMicros, position.LongitudeMicros)
+	events := make([]GeofenceEvent, 0, 2)
+	err := store.withIngestRole(ctx, func(tx pgx.Tx) error {
+		zones, err := zonesContaining(ctx, tx, position.LatitudeMicros, position.LongitudeMicros)
+		if err != nil {
+			return err
+		}
+		current := make([]string, 0, len(zones))
+		byID := make(map[string]Zone, len(zones))
+		for _, zone := range zones {
+			current = append(current, zone.ZoneID)
+			byID[zone.ZoneID] = zone
+		}
+		previous, err := state.Membership(ctx, vesselKey)
+		if err != nil {
+			return err
+		}
+		transitions := ComputeTransitions(current, previous)
+		if err := state.Replace(ctx, vesselKey, current); err != nil {
+			return err
+		}
+		for _, transition := range transitions {
+			zone := byID[transition.ZoneID]
+			if transition.Direction == "EXIT" {
+				// Zone metadata may be unavailable after exit (zone deleted or
+				// point outside); resolve name/tenant from the recorded state
+				// where possible.
+				lookup, err := zonesByID(ctx, tx, transition.ZoneID)
+				if err != nil {
+					return err
+				}
+				if len(lookup) == 1 {
+					zone = lookup[0]
+				} else {
+					continue
+				}
+			}
+			event := GeofenceEvent{
+				GeofenceEventID: eventID(),
+				TenantID:        zone.TenantID,
+				ZoneID:          zone.ZoneID,
+				ZoneName:        zone.Name,
+				Event:           transition.Direction,
+				MMSI:            position.MMSI,
+				TrackReference:  position.VesselRef,
+				LatitudeMicros:  position.LatitudeMicros,
+				LongitudeMicros: position.LongitudeMicros,
+				Classification:  zone.ClassificationFloor,
+				OccurredAt:      position.ObservedAt.UTC(),
+			}
+			if _, err := tx.Exec(ctx, `INSERT INTO geofence_events (
+				geofence_event_id, tenant_id, zone_id, zone_name, event, mmsi, track_reference,
+				latitude_micros, longitude_micros, classification, occurred_at)
+				VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+				event.GeofenceEventID, event.TenantID, event.ZoneID, event.ZoneName, event.Event,
+				nullString(event.MMSI), nullString(event.TrackReference),
+				event.LatitudeMicros, event.LongitudeMicros, event.Classification, event.OccurredAt); err != nil {
+				return fmt.Errorf("insert geofence event %s: %w", event.GeofenceEventID, err)
+			}
+			events = append(events, event)
+		}
+		return nil
+	})
 	if err != nil {
 		return nil, err
-	}
-	current := make([]string, 0, len(zones))
-	byID := make(map[string]Zone, len(zones))
-	for _, zone := range zones {
-		current = append(current, zone.ZoneID)
-		byID[zone.ZoneID] = zone
-	}
-	previous, err := state.Membership(ctx, vesselKey)
-	if err != nil {
-		return nil, err
-	}
-	transitions := ComputeTransitions(current, previous)
-	if err := state.Replace(ctx, vesselKey, current); err != nil {
-		return nil, err
-	}
-	events := make([]GeofenceEvent, 0, len(transitions))
-	for _, transition := range transitions {
-		zone := byID[transition.ZoneID]
-		if transition.Direction == "EXIT" {
-			// Zone metadata may be unavailable after exit (zone deleted or
-			// point outside); resolve name/tenant from the recorded state
-			// where possible.
-			var lookup []Zone
-			lookup, err = store.zonesByID(ctx, transition.ZoneID)
-			if err != nil {
-				return nil, err
-			}
-			if len(lookup) == 1 {
-				zone = lookup[0]
-			} else {
-				continue
-			}
-		}
-		event := GeofenceEvent{
-			GeofenceEventID: eventID(),
-			TenantID:        zone.TenantID,
-			ZoneID:          zone.ZoneID,
-			ZoneName:        zone.Name,
-			Event:           transition.Direction,
-			MMSI:            position.MMSI,
-			TrackReference:  position.VesselRef,
-			LatitudeMicros:  position.LatitudeMicros,
-			LongitudeMicros: position.LongitudeMicros,
-			Classification:  zone.ClassificationFloor,
-			OccurredAt:      position.ObservedAt.UTC(),
-		}
-		if _, err := store.pool.Exec(ctx, `INSERT INTO geofence_events (
-			geofence_event_id, tenant_id, zone_id, zone_name, event, mmsi, track_reference,
-			latitude_micros, longitude_micros, classification, occurred_at)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
-			event.GeofenceEventID, event.TenantID, event.ZoneID, event.ZoneName, event.Event,
-			nullString(event.MMSI), nullString(event.TrackReference),
-			event.LatitudeMicros, event.LongitudeMicros, event.Classification, event.OccurredAt); err != nil {
-			return nil, fmt.Errorf("insert geofence event %s: %w", event.GeofenceEventID, err)
-		}
-		events = append(events, event)
 	}
 	return events, nil
 }
 
 // zonesByID resolves a zone regardless of state (EXIT bookkeeping after a
-// zone reverted to draft).
-func (store *Store) zonesByID(ctx context.Context, zoneID string) ([]Zone, error) {
-	rows, err := store.pool.Query(ctx, `SELECT zone_id, tenant_id, name, classification_floor, state
+// zone reverted to draft). Ingest-role transaction only.
+func zonesByID(ctx context.Context, tx pgx.Tx, zoneID string) ([]Zone, error) {
+	rows, err := tx.Query(ctx, `SELECT zone_id, tenant_id, name, classification_floor, state
 		FROM geofence_zones WHERE zone_id = $1`, zoneID)
 	if err != nil {
 		return nil, err

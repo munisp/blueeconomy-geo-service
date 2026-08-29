@@ -23,10 +23,23 @@ import (
 	"github.com/munisp/blueeconomy-geo-service/internal/store"
 )
 
+// SignedEnvelopePublisher is the lifecycle event boundary the SOS
+// acknowledge/resolve handlers publish through (connectors.Pipeline in
+// production; a recording stub in tests). Envelopes are the canonical
+// envelopeVersion 1.0 signed contract on vessels.events.
+type SignedEnvelopePublisher interface {
+	PublishSignedEnvelope(ctx context.Context, eventType, correlationID string, payload any, occurredAt time.Time, classification string, headers map[string]string) error
+}
+
 // Server wires the REST handlers.
 type Server struct {
 	Store   *store.Store
 	Metrics *metrics.Registry
+	// SOSEvents publishes the signed sos.acknowledged / sos.resolved
+	// lifecycle envelopes. The lifecycle endpoints fail closed (503) when
+	// it is not wired — a lifecycle transition that cannot be announced
+	// must never silently persist.
+	SOSEvents SignedEnvelopePublisher
 }
 
 // NewServer validates the wiring fail-closed.

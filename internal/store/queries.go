@@ -126,7 +126,12 @@ func scanVesselSummaries(rows pgx.Rows) ([]VesselSummary, error) {
 
 // GetVessel360 resolves the vessel-360 view: latest position, current
 // static record and the most recent zone crossings, clearance-filtered.
-func (store *Store) GetVessel360(ctx context.Context, mmsi string, clearedLabels []string) (*Vessel360, error) {
+// The position/static planes are the shared national picture (classification
+// clearance only — see README "Position plane scoping"); zone crossings are
+// tenant-governed rows under FORCE RLS, so they are read with the caller's
+// tenant bound. A principal without a tenant binding receives the shared
+// planes with an empty RecentZones — never a cross-tenant leak.
+func (store *Store) GetVessel360(ctx context.Context, mmsi, tenantID string, clearedLabels []string) (*Vessel360, error) {
 	view := &Vessel360{RecentZones: []GeofenceRow{}}
 	rows, err := store.pool.Query(ctx, `SELECT l.mmsi, l.vessel_ref, l.source_class,
 		l.latitude_micros, l.longitude_micros, l.speed_over_ground_milliknots,
@@ -162,28 +167,36 @@ func (store *Store) GetVessel360(ctx context.Context, mmsi string, clearedLabels
 	if err == nil {
 		view.Static = &static
 	}
-	eventRows, err := store.pool.Query(ctx, `SELECT geofence_event_id, zone_id, zone_name, event,
-		COALESCE(mmsi, ''), COALESCE(track_reference, ''), latitude_micros, longitude_micros,
-		classification, occurred_at
-		FROM geofence_events WHERE mmsi = $1 AND classification = ANY($2)
-		ORDER BY occurred_at DESC LIMIT 20`, mmsi, clearedLabels)
-	if err != nil {
-		return nil, fmt.Errorf("vessel-360 zones: %w", err)
-	}
-	defer eventRows.Close()
-	for eventRows.Next() {
-		var event GeofenceRow
-		if err := eventRows.Scan(&event.GeofenceEventID, &event.ZoneID, &event.ZoneName, &event.Event,
-			&event.MMSI, &event.TrackReference, &event.LatitudeMicros, &event.LongitudeMicros,
-			&event.Classification, &event.OccurredAt); err != nil {
-			return nil, fmt.Errorf("vessel-360 zone scan: %w", err)
+	if tenantID != "" {
+		err = store.WithTenant(ctx, tenantID, func(tx pgx.Tx) error {
+			eventRows, err := tx.Query(ctx, `SELECT geofence_event_id, zone_id, zone_name, event,
+				COALESCE(mmsi, ''), COALESCE(track_reference, ''), latitude_micros, longitude_micros,
+				classification, occurred_at
+				FROM geofence_events WHERE mmsi = $1 AND classification = ANY($2)
+				ORDER BY occurred_at DESC LIMIT 20`, mmsi, clearedLabels)
+			if err != nil {
+				return err
+			}
+			defer eventRows.Close()
+			for eventRows.Next() {
+				var event GeofenceRow
+				if err := eventRows.Scan(&event.GeofenceEventID, &event.ZoneID, &event.ZoneName, &event.Event,
+					&event.MMSI, &event.TrackReference, &event.LatitudeMicros, &event.LongitudeMicros,
+					&event.Classification, &event.OccurredAt); err != nil {
+					return fmt.Errorf("vessel-360 zone scan: %w", err)
+				}
+				view.RecentZones = append(view.RecentZones, event)
+			}
+			return eventRows.Err()
+		})
+		if err != nil {
+			return nil, fmt.Errorf("vessel-360 zones: %w", err)
 		}
-		view.RecentZones = append(view.RecentZones, event)
 	}
 	if view.Latest == nil && view.Static == nil {
 		return nil, nil
 	}
-	return view, eventRows.Err()
+	return view, nil
 }
 
 // GetTrack renders the vessel's track over [from, to] as a GeoJSON

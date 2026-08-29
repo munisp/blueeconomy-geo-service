@@ -24,6 +24,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/require"
 
@@ -90,6 +91,14 @@ func newHarness(t *testing.T) *harness {
 	require.NoError(t, err)
 	t.Cleanup(storage.Close)
 	require.NoError(t, store.Migrate(ctx, storage, db.MigrationsFS))
+	// The ingest geofence evaluator assumes the explicit platform-wide
+	// geo_ingest role per transaction (0007_rls_default_deny.sql); the
+	// migration grants it to the `geo` app role — grant it to the test
+	// role as well so SET LOCAL ROLE succeeds.
+	_, err = storage.Pool().Exec(ctx, `DO $$ BEGIN
+		EXECUTE format('GRANT geo_ingest TO %I', current_user);
+	END $$;`)
+	require.NoError(t, err)
 	require.NoError(t, storage.EnsurePositionPartitions(ctx, time.Now(), time.Now().Add(24*time.Hour)))
 
 	redisClient := redis.NewClient(&redis.Options{Addr: redisAddr})
@@ -131,14 +140,25 @@ func newHarness(t *testing.T) *harness {
 	return &harness{store: storage, redis: redisClient, pipeline: pipeline, recorder: rec, publisher: publisher}
 }
 
-// clean removes test rows (test MMSIs are in the 000001xxx synthetic range).
+// clean removes test rows (test MMSIs are in the 000001xxx synthetic
+// range). Tenant-governed tables are default-deny without a bound tenant
+// (0007_rls_default_deny.sql), so zone/event cleanup runs per test tenant.
 func (h *harness) clean(t *testing.T) {
 	t.Helper()
 	ctx := context.Background()
+	for _, tenant := range []string{testTenant, testTenant2} {
+		require.NoError(t, h.store.WithTenant(ctx, tenant, func(tx pgx.Tx) error {
+			if _, err := tx.Exec(ctx, `DELETE FROM geofence_events WHERE zone_id LIKE 'itest-%'`); err != nil {
+				return err
+			}
+			if _, err := tx.Exec(ctx, `DELETE FROM geofence_zone_approvals WHERE zone_id LIKE 'itest-%'`); err != nil {
+				return err
+			}
+			_, err := tx.Exec(ctx, `DELETE FROM geofence_zones WHERE zone_id LIKE 'itest-%'`)
+			return err
+		}))
+	}
 	for _, statement := range []string{
-		`DELETE FROM geofence_events WHERE zone_id LIKE 'itest-%'`,
-		`DELETE FROM geofence_zone_approvals WHERE zone_id LIKE 'itest-%'`,
-		`DELETE FROM geofence_zones WHERE zone_id LIKE 'itest-%'`,
 		`DELETE FROM latest_positions WHERE mmsi LIKE '000001%' OR vessel_ref LIKE 'itest-%'`,
 		`DELETE FROM vessels_static WHERE mmsi LIKE '000001%'`,
 		`DELETE FROM ais_positions WHERE mmsi LIKE '000001%' OR vessel_ref LIKE 'itest-%'`,
