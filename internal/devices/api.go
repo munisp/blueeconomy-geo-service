@@ -641,10 +641,11 @@ func deviceAuthorization(request *http.Request) (string, bool) {
 	return strings.TrimSpace(parts[1]), true
 }
 
-// audit appends one ledger entry; failures are counted, never fatal to
-// the completed decision (the decision itself is already durable).
+// audit appends one ledger entry through the device-plane writer;
+// failures are counted, never fatal to the completed decision (the
+// decision itself is already durable).
 func (api *API) audit(request *http.Request, event AuditEvent) {
-	if err := api.Store.InsertAudit(request.Context(), event); err != nil {
+	if err := api.Verifier.Reader.InsertAudit(request.Context(), event); err != nil {
 		api.Metrics.Inc("geo_device_audit_errors_total", nil)
 	}
 }
