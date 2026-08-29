@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -120,7 +121,8 @@ func (store *Store) InsertSOSAlert(ctx context.Context, alert SOSAlert) (inserte
 	return false, nil
 }
 
-// SOSRow is the REST read model for sos_alerts.
+// SOSRow is the REST read model for sos_alerts. The lifecycle ledger
+// columns are exposed so clients stop treating resolved history as live.
 type SOSRow struct {
 	SosAlertID      string    `json:"sosAlertId"`
 	ReporterID      string    `json:"reporterId"`
@@ -132,13 +134,31 @@ type SOSRow struct {
 	Classification  string    `json:"classification"`
 	State           string    `json:"state"`
 	ReceivedAt      time.Time `json:"receivedAt"`
+	// Lifecycle ledger (0006_sos_lifecycle.sql); empty while RAISED.
+	AcknowledgedBy string     `json:"acknowledgedBy,omitempty"`
+	AcknowledgedAt *time.Time `json:"acknowledgedAt,omitempty"`
+	ResolvedBy     string     `json:"resolvedBy,omitempty"`
+	ResolvedAt     *time.Time `json:"resolvedAt,omitempty"`
+}
+
+// sosColumns is the shared SELECT column list for the SOS read model.
+const sosColumns = `sos_alert_id, reporter_id, vessel_reference,
+	latitude_micros, longitude_micros, recorded_at, free_text, classification, state, received_at,
+	COALESCE(acknowledged_by, ''), acknowledged_at, COALESCE(resolved_by, ''), resolved_at`
+
+func scanSOSRow(scanner interface{ Scan(...any) error }) (SOSRow, error) {
+	var alert SOSRow
+	err := scanner.Scan(&alert.SosAlertID, &alert.ReporterID, &alert.VesselReference,
+		&alert.LatitudeMicros, &alert.LongitudeMicros, &alert.RecordedAt,
+		&alert.FreeText, &alert.Classification, &alert.State, &alert.ReceivedAt,
+		&alert.AcknowledgedBy, &alert.AcknowledgedAt, &alert.ResolvedBy, &alert.ResolvedAt)
+	return alert, err
 }
 
 // ListSOS returns alerts whose classification is covered by the caller's
 // clearance (the API enforces the RESTRICTED floor before calling).
 func (store *Store) ListSOS(ctx context.Context, clearedLabels []string, limit int) ([]SOSRow, error) {
-	rows, err := store.pool.Query(ctx, `SELECT sos_alert_id, reporter_id, vessel_reference,
-		latitude_micros, longitude_micros, recorded_at, free_text, classification, state, received_at
+	rows, err := store.pool.Query(ctx, `SELECT `+sosColumns+`
 		FROM sos_alerts WHERE classification = ANY($1)
 		ORDER BY received_at DESC LIMIT $2`, clearedLabels, limit)
 	if err != nil {
@@ -147,15 +167,79 @@ func (store *Store) ListSOS(ctx context.Context, clearedLabels []string, limit i
 	defer rows.Close()
 	alerts := make([]SOSRow, 0)
 	for rows.Next() {
-		var alert SOSRow
-		if err := rows.Scan(&alert.SosAlertID, &alert.ReporterID, &alert.VesselReference,
-			&alert.LatitudeMicros, &alert.LongitudeMicros, &alert.RecordedAt,
-			&alert.FreeText, &alert.Classification, &alert.State, &alert.ReceivedAt); err != nil {
+		alert, err := scanSOSRow(rows)
+		if err != nil {
 			return nil, fmt.Errorf("scan sos alert: %w", err)
 		}
 		alerts = append(alerts, alert)
 	}
 	return alerts, rows.Err()
+}
+
+// ErrSOSNotFound is returned when the alert id is unknown.
+var ErrSOSNotFound = errors.New("sos alert not found")
+
+// ErrSOSInvalidTransition is returned when the requested lifecycle step is
+// not legal from the current state (409 semantics).
+var ErrSOSInvalidTransition = errors.New("sos alert lifecycle transition is not legal from the current state")
+
+// TransitionSOSAlert applies one lifecycle step under SELECT ... FOR UPDATE:
+// acknowledge requires RAISED; resolve requires RAISED or ACKNOWLEDGED
+// (direct RAISED -> RESOLVED is a legal shortcut). The acting principal
+// (from verified token claims), the server timestamp and an optional note
+// are persisted on the ledger columns; the updated row is returned.
+func (store *Store) TransitionSOSAlert(ctx context.Context, sosAlertID, actor, action, note string) (SOSRow, error) {
+	if strings.TrimSpace(actor) == "" {
+		return SOSRow{}, errors.New("lifecycle actor is required")
+	}
+	if action != "acknowledge" && action != "resolve" {
+		return SOSRow{}, fmt.Errorf("sos lifecycle action %q is not acknowledge or resolve", action)
+	}
+	if len(note) > 500 {
+		return SOSRow{}, errors.New("lifecycle note exceeds 500 characters")
+	}
+	tx, err := store.pool.Begin(ctx)
+	if err != nil {
+		return SOSRow{}, fmt.Errorf("begin sos transition: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var state string
+	err = tx.QueryRow(ctx, `SELECT state FROM sos_alerts WHERE sos_alert_id = $1 FOR UPDATE`, sosAlertID).Scan(&state)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return SOSRow{}, ErrSOSNotFound
+	}
+	if err != nil {
+		return SOSRow{}, fmt.Errorf("lock sos alert %s: %w", sosAlertID, err)
+	}
+	var update string
+	switch action {
+	case "acknowledge":
+		if state != "RAISED" {
+			return SOSRow{}, fmt.Errorf("%w: %s -> ACKNOWLEDGED", ErrSOSInvalidTransition, state)
+		}
+		update = `UPDATE sos_alerts SET state = 'ACKNOWLEDGED',
+			acknowledged_by = $2, acknowledged_at = now(), acknowledge_note = $3
+			WHERE sos_alert_id = $1`
+	case "resolve":
+		if state != "RAISED" && state != "ACKNOWLEDGED" {
+			return SOSRow{}, fmt.Errorf("%w: %s -> RESOLVED", ErrSOSInvalidTransition, state)
+		}
+		update = `UPDATE sos_alerts SET state = 'RESOLVED',
+			resolved_by = $2, resolved_at = now(), resolve_note = $3
+			WHERE sos_alert_id = $1`
+	}
+	if _, err := tx.Exec(ctx, update, sosAlertID, actor, note); err != nil {
+		return SOSRow{}, fmt.Errorf("transition sos alert %s to %s: %w", sosAlertID, action, err)
+	}
+	row, err := scanSOSRow(tx.QueryRow(ctx, `SELECT `+sosColumns+` FROM sos_alerts WHERE sos_alert_id = $1`, sosAlertID))
+	if err != nil {
+		return SOSRow{}, fmt.Errorf("read transitioned sos alert %s: %w", sosAlertID, err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return SOSRow{}, fmt.Errorf("commit sos transition: %w", err)
+	}
+	return row, nil
 }
 
 // LatestPositionForVesselRef resolves an app vessel reference for the

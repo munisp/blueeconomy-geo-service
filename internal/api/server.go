@@ -1,16 +1,19 @@
 // Package api is the /v1/geo REST boundary: latest positions (bbox),
 // vessel-360, track replay (GeoJSON LineString), vessels-in-zone, zone
-// administration (maker-checker) and SOS read-back. Every read is
-// clearance-floor enforced (reader clearance >= row classification, geo
-// ladder PUBLIC..SECRET) and tenant-scoped reads bind app.tenant_id for RLS.
+// administration (maker-checker), SOS read-back and the SOS lifecycle
+// (acknowledge/resolve). Every read is clearance-floor enforced (reader
+// clearance >= row classification, geo ladder PUBLIC..SECRET) and
+// tenant-scoped reads bind app.tenant_id for RLS.
 // Roles: geo-reader (reads), geo-zone-maker / geo-zone-checker (zone admin),
-// geo-sos-reader (SOS, RESTRICTED+ clearance required).
+// geo-sos-reader (SOS reads and lifecycle, RESTRICTED+ clearance required).
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -70,6 +73,10 @@ func (server *Server) Handler(authenticator auth.Authenticator, appReportRoutes 
 		auth.RequireRoles(http.HandlerFunc(server.approveZone), "geo-zone-checker", "geo-admin"))
 	mux.Handle("GET /v1/geo/sos",
 		auth.RequireRoles(http.HandlerFunc(server.listSOS), "geo-sos-reader", "geo-admin"))
+	mux.Handle("POST /v1/geo/sos/{id}/acknowledge",
+		auth.RequireRoles(http.HandlerFunc(server.acknowledgeSOS), "geo-sos-reader", "geo-admin"))
+	mux.Handle("POST /v1/geo/sos/{id}/resolve",
+		auth.RequireRoles(http.HandlerFunc(server.resolveSOS), "geo-sos-reader", "geo-admin"))
 	if appReportRoutes != nil {
 		appReportRoutes(mux)
 	}
@@ -201,7 +208,7 @@ func (server *Server) vessel360(writer http.ResponseWriter, request *http.Reques
 		writeError(writer, http.StatusBadRequest, "mmsi must be 9 digits")
 		return
 	}
-	view, err := server.Store.GetVessel360(request.Context(), mmsi, clearedLabels(principal.Clearance))
+	view, err := server.Store.GetVessel360(request.Context(), mmsi, principal.TenantID, clearedLabels(principal.Clearance))
 	if err != nil {
 		writeError(writer, http.StatusInternalServerError, "vessel-360 query failed")
 		return
@@ -378,6 +385,107 @@ func (server *Server) listSOS(writer http.ResponseWriter, request *http.Request)
 		return
 	}
 	writeJSON(writer, http.StatusOK, map[string]any{"sosAlerts": alerts})
+}
+
+// sosLifecycleRequest is the optional acknowledge/resolve note.
+type sosLifecycleRequest struct {
+	Note string `json:"note"`
+}
+
+// sosIDPattern mirrors the sos_alert_id contract shape.
+var sosIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`)
+
+// acknowledgeSOS: POST /v1/geo/sos/{id}/acknowledge (RAISED -> ACKNOWLEDGED).
+func (server *Server) acknowledgeSOS(writer http.ResponseWriter, request *http.Request) {
+	server.transitionSOS(writer, request, "acknowledge")
+}
+
+// resolveSOS: POST /v1/geo/sos/{id}/resolve (RAISED|ACKNOWLEDGED -> RESOLVED).
+func (server *Server) resolveSOS(writer http.ResponseWriter, request *http.Request) {
+	server.transitionSOS(writer, request, "resolve")
+}
+
+// transitionSOS applies one lifecycle step with the same gate as the SOS
+// read path (geo-sos-reader/geo-admin role + RESTRICTED clearance floor),
+// persists the actor/timestamp/note ledger entry and publishes the signed
+// lifecycle envelope. Illegal transitions are 409; unknown alerts 404.
+func (server *Server) transitionSOS(writer http.ResponseWriter, request *http.Request, action string) {
+	principal, ok := principalOrFail(writer, request)
+	if !ok {
+		return
+	}
+	clearance, err := sign.ParseClassification(principal.Clearance)
+	if err != nil || !clearance.Covers(sign.ClassificationRestricted) {
+		writeError(writer, http.StatusForbidden, "sos lifecycle requires RESTRICTED or higher clearance")
+		return
+	}
+	if server.SOSEvents == nil {
+		writeError(writer, http.StatusServiceUnavailable, "sos lifecycle event publisher is not wired")
+		return
+	}
+	sosAlertID := request.PathValue("id")
+	if !sosIDPattern.MatchString(sosAlertID) {
+		writeError(writer, http.StatusBadRequest, "sos alert id is invalid")
+		return
+	}
+	var payload sosLifecycleRequest
+	if request.Body != nil {
+		err := json.NewDecoder(request.Body).Decode(&payload)
+		if err != nil && !errors.Is(err, io.EOF) {
+			writeError(writer, http.StatusBadRequest, "request body is not valid JSON")
+			return
+		}
+	}
+	alert, err := server.Store.TransitionSOSAlert(request.Context(), sosAlertID, principal.Subject, action, payload.Note)
+	switch {
+	case errors.Is(err, store.ErrSOSNotFound):
+		writeError(writer, http.StatusNotFound, "sos alert not found")
+		return
+	case errors.Is(err, store.ErrSOSInvalidTransition):
+		writeError(writer, http.StatusConflict, err.Error())
+		return
+	case err != nil:
+		writeError(writer, http.StatusBadRequest, "sos lifecycle transition failed: "+err.Error())
+		return
+	}
+	// The row is durable; announce the transition on the canonical signed
+	// envelope (SAFETY priority, RESTRICTED floor inherited from the alert).
+	occurredAt := time.Now().UTC()
+	if action == "acknowledge" {
+		if alert.AcknowledgedAt != nil {
+			occurredAt = *alert.AcknowledgedAt
+		}
+		err = server.SOSEvents.PublishSignedEnvelope(request.Context(), sign.EventSOSAcknowledged,
+			alert.SosAlertID, sign.SosAlertAcknowledged{
+				SosAlertID:      alert.SosAlertID,
+				ReporterID:      alert.ReporterID,
+				VesselReference: alert.VesselReference,
+				AcknowledgedBy:  principal.Subject,
+				AcknowledgedAt:  occurredAt,
+				Note:            payload.Note,
+				Classification:  alert.Classification,
+			}, occurredAt, alert.Classification, map[string]string{"priority": "SAFETY"})
+	} else {
+		if alert.ResolvedAt != nil {
+			occurredAt = *alert.ResolvedAt
+		}
+		err = server.SOSEvents.PublishSignedEnvelope(request.Context(), sign.EventSOSResolved,
+			alert.SosAlertID, sign.SosAlertResolved{
+				SosAlertID:      alert.SosAlertID,
+				ReporterID:      alert.ReporterID,
+				VesselReference: alert.VesselReference,
+				ResolvedBy:      principal.Subject,
+				ResolvedAt:      occurredAt,
+				Note:            payload.Note,
+				Classification:  alert.Classification,
+			}, occurredAt, alert.Classification, map[string]string{"priority": "SAFETY"})
+	}
+	if err != nil {
+		writeError(writer, http.StatusInternalServerError, "sos lifecycle event publication failed")
+		return
+	}
+	server.Metrics.Inc("geo_sos_lifecycle_transitions_total", map[string]string{"action": action})
+	writeJSON(writer, http.StatusOK, map[string]any{"sosAlert": alert})
 }
 
 func writeJSON(writer http.ResponseWriter, status int, body any) {

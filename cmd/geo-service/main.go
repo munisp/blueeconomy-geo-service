@@ -176,6 +176,9 @@ func run(logger *log.Logger) error {
 		if err != nil {
 			return err
 		}
+		// The SOS lifecycle endpoints publish signed transition envelopes
+		// through the hot-path pipeline.
+		server.SOSEvents = pipeline
 		appReports := &connectors.AppReportHandler{Pipeline: pipeline}
 		httpServer := &http.Server{
 			Addr:              cfg.APIAddr,

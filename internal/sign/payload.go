@@ -113,3 +113,29 @@ type SosAlertRaised struct {
 	FreeText        string    `json:"freeText,omitempty"`
 	Classification  string    `json:"classification"`
 }
+
+// SosAlertAcknowledged is the geo.sos-acknowledged.v1 payload: the acting
+// principal (from verified token claims) took ownership of the alert.
+// Classification floor: RESTRICTED (same as the alert it references).
+type SosAlertAcknowledged struct {
+	SosAlertID      string    `json:"sosAlertId"`
+	ReporterID      string    `json:"reporterId"`
+	VesselReference string    `json:"vesselReference"`
+	AcknowledgedBy  string    `json:"acknowledgedBy"`
+	AcknowledgedAt  time.Time `json:"acknowledgedAt"`
+	Note            string    `json:"note,omitempty"`
+	Classification  string    `json:"classification"`
+}
+
+// SosAlertResolved is the geo.sos-resolved.v1 payload: the acting principal
+// closed the alert (from RAISED or ACKNOWLEDGED). Classification floor:
+// RESTRICTED (same as the alert it references).
+type SosAlertResolved struct {
+	SosAlertID      string    `json:"sosAlertId"`
+	ReporterID      string    `json:"reporterId"`
+	VesselReference string    `json:"vesselReference"`
+	ResolvedBy      string    `json:"resolvedBy"`
+	ResolvedAt      time.Time `json:"resolvedAt"`
+	Note            string    `json:"note,omitempty"`
+	Classification  string    `json:"classification"`
+}

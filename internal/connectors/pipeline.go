@@ -354,6 +354,10 @@ func envelopeKey(payload any) string {
 		return typed.ReporterID
 	case sign.SosAlertRaised:
 		return typed.ReporterID
+	case sign.SosAlertAcknowledged:
+		return typed.ReporterID
+	case sign.SosAlertResolved:
+		return typed.ReporterID
 	}
 	return ""
 }

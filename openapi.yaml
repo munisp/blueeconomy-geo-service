@@ -9,6 +9,13 @@ info:
     milli-degrees per the geo.*.v1 contracts; floating-point coordinates are
     prohibited. Reads enforce the classification clearance ladder (reader
     clearance >= row classification) and tenant RLS scoping.
+    Position plane scoping: the vessel position plane (/vessels* reads,
+    ais_positions/latest_positions/vessels_static) is a single shared
+    national picture scoped by classification clearance, NOT by tenant —
+    those tables carry no tenant column by design. Tenant isolation (RLS)
+    governs only the tenant-owned geofence objects (/zones*, geofence
+    events); vessel-360 recentZones is read with the caller's tenant bound
+    and is empty for tenant-less principals.
 servers:
   - url: /v1/geo
 security:
@@ -188,6 +195,77 @@ paths:
                     items:
                       $ref: '#/components/schemas/SOSAlert'
         '403': { $ref: '#/components/responses/Forbidden' }
+  /sos/{id}/acknowledge:
+    post:
+      summary: Acknowledge a RAISED SOS alert (geo-sos-reader/geo-admin + RESTRICTED clearance)
+      operationId: acknowledgeSOS
+      description: >-
+        Lifecycle transition RAISED -> ACKNOWLEDGED. The acting principal
+        (verified token subject), server timestamp and optional note are
+        persisted on the alert ledger and announced as a signed
+        geo.sos-acknowledged.v1 envelope (SAFETY priority, RESTRICTED
+        floor). Illegal transitions return 409.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, pattern: '^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$' }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SOSLifecycleRequest'
+      responses:
+        '200':
+          description: Alert acknowledged; returns the updated alert
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  sosAlert:
+                    $ref: '#/components/schemas/SOSAlert'
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: Illegal lifecycle transition from the current state
+  /sos/{id}/resolve:
+    post:
+      summary: Resolve an SOS alert (geo-sos-reader/geo-admin + RESTRICTED clearance)
+      operationId: resolveSOS
+      description: >-
+        Lifecycle transition RAISED -> RESOLVED or ACKNOWLEDGED -> RESOLVED.
+        Actor, timestamp and optional note are persisted and announced as a
+        signed geo.sos-resolved.v1 envelope (SAFETY priority, RESTRICTED
+        floor). RESOLVED is terminal; further transitions return 409.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, pattern: '^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$' }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SOSLifecycleRequest'
+      responses:
+        '200':
+          description: Alert resolved; returns the updated alert
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  sosAlert:
+                    $ref: '#/components/schemas/SOSAlert'
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: Illegal lifecycle transition from the current state
   /app-reports:
     post:
       summary: Tier-0 mobile outbox flush (position report or SOS)
@@ -276,7 +354,25 @@ components:
         state:
           type: string
           enum: [RAISED, ACKNOWLEDGED, RESOLVED]
+          description: >-
+            Lifecycle state. Clients must treat only RAISED/ACKNOWLEDGED as
+            live; RESOLVED alerts are history.
         receivedAt: { type: string, format: date-time }
+        acknowledgedBy:
+          type: string
+          description: Verified principal subject that acknowledged the alert
+        acknowledgedAt: { type: string, format: date-time }
+        resolvedBy:
+          type: string
+          description: Verified principal subject that resolved the alert
+        resolvedAt: { type: string, format: date-time }
+    SOSLifecycleRequest:
+      type: object
+      properties:
+        note:
+          type: string
+          maxLength: 500
+          description: Optional operator note persisted on the lifecycle ledger
     AppReportRequest:
       type: object
       required: [reporterId, vesselReference, latitudeMicros, longitudeMicros, recordedAt, outboxId]

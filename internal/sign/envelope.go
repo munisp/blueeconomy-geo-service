@@ -28,6 +28,10 @@ const (
 	EventGeofenceEvent     = "geo.geofence-event.v1"
 	EventAppPositionReport = "geo.app-position-report.v1"
 	EventSOS               = "geo.sos.v1"
+	// EventSOSAcknowledged / EventSOSResolved carry the SOS lifecycle
+	// ledger transitions (RESTRICTED floor, same as the alert).
+	EventSOSAcknowledged = "geo.sos-acknowledged.v1"
+	EventSOSResolved     = "geo.sos-resolved.v1"
 
 	// typeURLPrefix names the proto package for the FHIR Any projection.
 	typeURLPrefix = "type.googleapis.com/blueeconomy.contracts.v1."
@@ -42,6 +46,15 @@ var eventResourceType = map[string]string{
 	EventGeofenceEvent:     "GeofenceEventRecorded",
 	EventAppPositionReport: "AppPositionReported",
 	EventSOS:               "SosAlertRaised",
+	EventSOSAcknowledged:   "SosAlertAcknowledged",
+	EventSOSResolved:       "SosAlertResolved",
+}
+
+// sosEventTypes marks the event family carrying the RESTRICTED floor.
+var sosEventTypes = map[string]bool{
+	EventSOS:             true,
+	EventSOSAcknowledged: true,
+	EventSOSResolved:     true,
 }
 
 // Provenance binds an event to the acting principal and the integrity chain.
@@ -130,9 +143,10 @@ func NewEnvelope(eventType, correlationID string, payload any, occurredAt time.T
 	} else {
 		return Envelope{}, fmt.Errorf("%s payload must assert a classification", eventType)
 	}
-	// Contract floor: SOS alerts are RESTRICTED minimum.
-	if eventType == EventSOS && contentClass.Rank() < ClassificationRestricted.Rank() {
-		return Envelope{}, errors.New("geo.sos.v1 classification floor is RESTRICTED")
+	// Contract floor: SOS alerts and their lifecycle events are RESTRICTED
+	// minimum.
+	if sosEventTypes[eventType] && contentClass.Rank() < ClassificationRestricted.Rank() {
+		return Envelope{}, fmt.Errorf("%s classification floor is RESTRICTED", eventType)
 	}
 	typeBytes, err := json.Marshal(typeURLPrefix + resourceType)
 	if err != nil {
