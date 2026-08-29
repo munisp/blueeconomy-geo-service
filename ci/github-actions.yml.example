@@ -1,0 +1,49 @@
+# CI pipeline definition for blueeconomy-geo-service.
+#
+# NOTE: this file MUST be moved to .github/workflows/go-quality.yml once a
+# GitHub token with the `workflow` scope is available — the current push
+# token cannot create files under .github/workflows/. Until then this is an
+# inert example (ci/ is not executed by GitHub Actions).
+name: go-quality
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+      - run: go vet ./...
+      - run: go test ./internal/... ./cmd/...
+
+  integration:
+    runs-on: ubuntu-latest
+    services:
+      postgis:
+        image: postgis/postgis:15-3.4
+        env:
+          POSTGRES_USER: geo
+          POSTGRES_PASSWORD: ${{ secrets.GEO_TEST_PG_PASSWORD }}
+          POSTGRES_DB: geo_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U geo -d geo_test"
+          --health-interval 5s --health-timeout 3s --health-retries 20
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+    env:
+      GEO_TEST_PG_DSN: postgres://geo:${{ secrets.GEO_TEST_PG_PASSWORD }}@localhost:5432/geo_test
+      GEO_TEST_REDIS_ADDR: localhost:6379
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+      - run: go test ./integration/...

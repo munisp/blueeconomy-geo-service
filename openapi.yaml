@@ -1,0 +1,324 @@
+openapi: 3.0.3
+info:
+  title: blueeconomy-geo-service REST API
+  version: 1.0.0
+  description: >-
+    Sovereign vessel-tracking hot path read model and Tier-0 app-report
+    ingest. All coordinates are fixed-point micro-degrees, speeds are
+    milli-knots (or millimetres-per-second on app reports) and courses are
+    milli-degrees per the geo.*.v1 contracts; floating-point coordinates are
+    prohibited. Reads enforce the classification clearance ladder (reader
+    clearance >= row classification) and tenant RLS scoping.
+servers:
+  - url: /v1/geo
+security:
+  - bearerAuth: []
+paths:
+  /vessels:
+    get:
+      summary: Latest vessel positions inside a bounding box
+      operationId: listVessels
+      parameters:
+        - name: bbox
+          in: query
+          description: minLon,minLat,maxLon,maxLat in fixed-point micro-degrees (defaults to whole world)
+          schema:
+            type: string
+            example: "-2000000,2500000,15500000,14500000"
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 500
+            maximum: 5000
+      responses:
+        '200':
+          description: Clearance-filtered latest positions
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  vessels:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/VesselSummary'
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /vessels/{mmsi}:
+    get:
+      summary: Vessel-360 (latest position + current static + recent zones)
+      operationId: vessel360
+      parameters:
+        - name: mmsi
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: '^[0-9]{9}$'
+      responses:
+        '200':
+          description: Vessel-360 view
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Vessel360'
+        '404': { $ref: '#/components/responses/NotFound' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+  /vessels/{mmsi}/track:
+    get:
+      summary: Track replay as GeoJSON LineString (ST_MakeLine window)
+      operationId: vesselTrack
+      parameters:
+        - name: mmsi
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: '^[0-9]{9}$'
+        - name: from
+          in: query
+          required: true
+          schema: { type: string, format: date-time }
+        - name: to
+          in: query
+          required: true
+          schema: { type: string, format: date-time }
+      responses:
+        '200':
+          description: GeoJSON LineString of the clearance-visible track
+          content:
+            application/geo+json:
+              schema:
+                type: object
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+  /zones:
+    get:
+      summary: List tenant geofence zones (clearance-filtered)
+      operationId: listZones
+      responses:
+        '200':
+          description: Tenant zones
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  zones:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Zone'
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      summary: Create a geofence zone (maker; persists as draft)
+      operationId: createZone
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [zoneId, name, classificationFloor, geometry]
+              properties:
+                zoneId: { type: string }
+                name: { type: string }
+                classificationFloor:
+                  $ref: '#/components/schemas/Classification'
+                geometry:
+                  type: object
+                  description: GeoJSON Polygon (WGS84)
+      responses:
+        '201':
+          description: Draft zone created
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /zones/{id}/approve:
+    post:
+      summary: Approve a draft zone (checker; maker != checker, four-eyes)
+      operationId: approveZone
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Zone approved
+        '409':
+          description: Maker attempted self-approval or zone not in draft
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /zones/{id}/vessels:
+    get:
+      summary: Vessels currently inside an approved zone
+      operationId: vesselsInZone
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 500, maximum: 5000 }
+      responses:
+        '200':
+          description: Clearance-filtered vessels inside the zone
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /sos:
+    get:
+      summary: SOS alerts (requires RESTRICTED or higher clearance)
+      operationId: listSOS
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, default: 100, maximum: 1000 }
+      responses:
+        '200':
+          description: Clearance-filtered SOS alerts
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  sosAlerts:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/SOSAlert'
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /app-reports:
+    post:
+      summary: Tier-0 mobile outbox flush (position report or SOS)
+      operationId: flushAppReport
+      description: >-
+        Idempotent on (reporterId, outboxId): an exact replay returns 200
+        with status "idempotent"; a conflicting reuse of an outboxId returns
+        409. A payload carrying the `sos` object raises a geo.sos.v1 alert
+        (SAFETY priority, RESTRICTED minimum classification).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AppReportRequest'
+      responses:
+        '200':
+          description: Accepted or idempotent replay
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '409':
+          description: outboxId already used with a different payload
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Keycloak RS256 JWT with roles, clearance and tenant_id claims
+  schemas:
+    Classification:
+      type: string
+      enum: [PUBLIC, INTERNAL, RESTRICTED, CONFIDENTIAL, SECRET]
+    VesselSummary:
+      type: object
+      properties:
+        mmsi: { type: string, pattern: '^[0-9]{9}$' }
+        vesselRef: { type: string }
+        sourceClass:
+          type: string
+          enum: [AIS, GSM_TRACKER, SAT_TRACKER, APP_REPORT]
+        latitudeMicros: { type: integer, format: int32 }
+        longitudeMicros: { type: integer, format: int32 }
+        speedOverGroundMilliknots: { type: integer, format: int32 }
+        courseOverGroundMillidegrees: { type: integer, format: int32 }
+        classification: { $ref: '#/components/schemas/Classification' }
+        observedAt: { type: string, format: date-time }
+        shipName: { type: string }
+        shipTypeCode: { type: integer }
+    Vessel360:
+      type: object
+      properties:
+        latest: { $ref: '#/components/schemas/VesselSummary' }
+        static:
+          type: object
+          description: Current SCD-2 vessels_static row
+        recentZones:
+          type: array
+          items:
+            type: object
+    Zone:
+      type: object
+      properties:
+        zoneId: { type: string }
+        tenantId: { type: string }
+        name: { type: string }
+        classificationFloor: { $ref: '#/components/schemas/Classification' }
+        state:
+          type: string
+          enum: [draft, approved]
+        makerPrincipalId: { type: string }
+        createdAt: { type: string, format: date-time }
+        approvedBy: { type: string }
+        approvedAt: { type: string, format: date-time }
+        geoJson: { type: string, description: Zone geometry as GeoJSON }
+    SOSAlert:
+      type: object
+      properties:
+        sosAlertId: { type: string }
+        reporterId: { type: string }
+        vesselReference: { type: string }
+        latitudeMicros: { type: integer, format: int32 }
+        longitudeMicros: { type: integer, format: int32 }
+        recordedAt: { type: string, format: date-time }
+        freeText: { type: string, maxLength: 280 }
+        classification: { $ref: '#/components/schemas/Classification' }
+        state:
+          type: string
+          enum: [RAISED, ACKNOWLEDGED, RESOLVED]
+        receivedAt: { type: string, format: date-time }
+    AppReportRequest:
+      type: object
+      required: [reporterId, vesselReference, latitudeMicros, longitudeMicros, recordedAt, outboxId]
+      properties:
+        reporterId: { type: string, maxLength: 128 }
+        vesselReference: { type: string, maxLength: 128 }
+        latitudeMicros: { type: integer, format: int32, minimum: -90000000, maximum: 90000000 }
+        longitudeMicros: { type: integer, format: int32, minimum: -180000000, maximum: 180000000 }
+        accuracyM: { type: integer, format: int32, minimum: 0 }
+        speedMillimetresPerSecond: { type: integer, format: int32, minimum: 0 }
+        recordedAt: { type: string, format: date-time, description: Untrusted device clock reading }
+        outboxId: { type: string, maxLength: 128 }
+        sos:
+          type: object
+          properties:
+            freeText: { type: string, maxLength: 280 }
+  responses:
+    BadRequest:
+      description: Invalid request
+      content:
+        application/json:
+          schema:
+            type: object
+            properties: { error: { type: string } }
+    Unauthenticated:
+      description: Missing or invalid authentication
+      content:
+        application/json:
+          schema:
+            type: object
+            properties: { error: { type: string } }
+    Forbidden:
+      description: Insufficient role, clearance or tenant binding
+      content:
+        application/json:
+          schema:
+            type: object
+            properties: { error: { type: string } }
+    NotFound:
+      description: Resource not found at caller clearance
+      content:
+        application/json:
+          schema:
+            type: object
+            properties: { error: { type: string } }
