@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/munisp/blueeconomy-geo-service/internal/auth"
 	"github.com/munisp/blueeconomy-geo-service/internal/sign"
@@ -152,6 +154,15 @@ func (handler *AppReportHandler) serve(writer http.ResponseWriter, request *http
 // serveSOS persists the alert and publishes the signed geo.sos.v1 envelope
 // immediately with SAFETY priority.
 func (handler *AppReportHandler) serveSOS(writer http.ResponseWriter, request *http.Request, payload appReportRequest, recordedAt, receivedAt time.Time) {
+	// Manual span around SOS classification + persistence + SAFETY-priority
+	// publication: distress alerts are always traced end to end.
+	ctx, span := tracer().Start(request.Context(), "geo.sos.classify",
+		trace.WithAttributes(
+			attribute.String("geo.sos.classification", string(sign.ClassificationRestricted)),
+			attribute.String("geo.sos.priority", "SAFETY"),
+		))
+	defer span.End()
+	request = request.WithContext(ctx)
 	if payload.SOS.FreeText != "" && len(payload.SOS.FreeText) > 280 {
 		writeAppError(writer, http.StatusBadRequest, "sos freeText exceeds 280 characters")
 		return

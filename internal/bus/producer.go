@@ -18,7 +18,19 @@ import (
 	"time"
 
 	"github.com/segmentio/kafka-go"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
+
+	"github.com/munisp/blueeconomy-geo-service/internal/telemetry"
 )
+
+// tracer returns the bus tracer. With telemetry disabled (no OTLP endpoint)
+// the global provider is a no-op: produce spans are non-recording and the
+// fail-closed publish semantics are unchanged.
+func tracer() trace.Tracer {
+	return otel.Tracer("github.com/munisp/blueeconomy-geo-service/internal/bus")
+}
 
 const (
 	// TopicAISRaw carries decoded+validated AIS frames keyed by MMSI.
@@ -103,16 +115,24 @@ func (producer *Producer) Publish(ctx context.Context, topic, key string, value 
 	if strings.TrimSpace(topic) == "" {
 		return errors.New("kafka topic is required")
 	}
+	// Produce span + manual carrier: the live W3C traceparent/baggage is
+	// injected into the record headers so consumers join this trace
+	// (kafka-go has no auto-instrumentation).
+	ctx, span := tracer().Start(ctx, "kafka.produce "+topic,
+		trace.WithSpanKind(trace.SpanKindProducer),
+		trace.WithAttributes(attribute.String("messaging.destination.name", topic)))
+	defer span.End()
 	message := kafka.Message{
 		Topic:   topic,
 		Key:     []byte(key),
 		Value:   value,
 		Time:    producer.now().UTC(),
-		Headers: make([]kafka.Header, 0, len(headers)),
+		Headers: make([]kafka.Header, 0, len(headers)+2),
 	}
 	for name, headerValue := range headers {
 		message.Headers = append(message.Headers, kafka.Header{Key: name, Value: []byte(headerValue)})
 	}
+	message.Headers = telemetry.InjectKafkaHeaders(ctx, message.Headers)
 	delay := producer.backoff
 	var err error
 	for attempt := 1; attempt <= producer.attempts; attempt++ {
@@ -130,6 +150,7 @@ func (producer *Producer) Publish(ctx context.Context, topic, key string, value 
 			delay *= 2
 		}
 	}
+	span.RecordError(err)
 	return fmt.Errorf("publish %s failed after %d attempts: %w", topic, producer.attempts, err)
 }
 

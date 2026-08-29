@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/exaring/otelpgx"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -56,6 +57,10 @@ func connectPool(ctx context.Context, dsn, label string) (*pgxpool.Pool, error) 
 	if err != nil {
 		return nil, fmt.Errorf("parse %s DSN: %w", label, err)
 	}
+	// otelpgx query tracer: every query/batch/copy/acquire emits a span
+	// (no-op when telemetry is disabled; the fail-closed database posture
+	// is unchanged).
+	config.ConnConfig.Tracer = otelpgx.NewTracer()
 	pool, err := pgxpool.NewWithConfig(ctx, config)
 	if err != nil {
 		return nil, fmt.Errorf("connect %s: %w", label, err)

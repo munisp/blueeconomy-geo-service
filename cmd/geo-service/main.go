@@ -22,6 +22,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/redis/go-redis/extra/redisotel/v9"
 	"github.com/redis/go-redis/v9"
 
 	"github.com/munisp/blueeconomy-geo-service/db"
@@ -36,6 +37,7 @@ import (
 	"github.com/munisp/blueeconomy-geo-service/internal/metrics"
 	"github.com/munisp/blueeconomy-geo-service/internal/sign"
 	"github.com/munisp/blueeconomy-geo-service/internal/store"
+	"github.com/munisp/blueeconomy-geo-service/internal/telemetry"
 	"github.com/munisp/blueeconomy-geo-service/internal/validate"
 )
 
@@ -59,6 +61,34 @@ func run(logger *log.Logger) error {
 		return err
 	}
 	registry := metrics.NewRegistry()
+
+	// Telemetry (OTEL_DESIGN §2 Go row): OTEL_EXPORTER_OTLP_ENDPOINT unset
+	// means tracing is DISABLED and the service boots and serves exactly as
+	// before; when set, export is async/batched and collector-down is
+	// drop-with-metric (telemetry_dropped_total), never a request failure.
+	telemetryConfig, err := telemetry.LoadConfig("blueeconomy-geo-service")
+	if err != nil {
+		return err
+	}
+	telemetryPipeline, err := telemetry.Setup(ctx, telemetryConfig)
+	if err != nil {
+		return err
+	}
+	telemetryPipeline.SetDropHook(func(spans int64) {
+		registry.Add("telemetry_dropped_total", nil, spans)
+	})
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), telemetry.ShutdownFlushTimeout)
+		defer cancel()
+		if err := telemetryPipeline.Shutdown(shutdownCtx); err != nil {
+			logger.Printf("telemetry shutdown: %v", err)
+		}
+	}()
+	if telemetryPipeline.Enabled() {
+		logger.Printf("telemetry: OTLP export enabled (endpoint=%s)", telemetryConfig.Endpoint)
+	} else {
+		logger.Printf("telemetry: tracing disabled (OTEL_EXPORTER_OTLP_ENDPOINT not set); no-op tracer active")
+	}
 
 	storage, err := store.New(ctx, cfg.PostgresDSN, cfg.IngestPostgresDSN)
 	if err != nil {
@@ -92,6 +122,11 @@ func run(logger *log.Logger) error {
 
 	redisClient := redis.NewClient(&redis.Options{Addr: cfg.RedisAddr})
 	defer redisClient.Close()
+	// otelredis client instrumentation (go-redis maintained; no-op spans
+	// when telemetry is disabled).
+	if err := redisotel.InstrumentTracing(redisClient); err != nil {
+		return errors.New("instrument redis client: " + err.Error())
+	}
 	if err := redisClient.Ping(ctx).Err(); err != nil {
 		return errors.New("redis unreachable: " + err.Error())
 	}
@@ -219,6 +254,11 @@ func run(logger *log.Logger) error {
 			})
 		}
 		// === END phase7 device-management plane ===
+		// otelhttp server middleware on the outermost handler: W3C
+		// traceparent/baggage extraction, route-pattern span names and
+		// tenant.id/agency baggage → span attributes on every request
+		// (geo API, device plane and MQTT auth webhook alike).
+		apiHandler = telemetryPipeline.Middleware(apiHandler)
 		httpServer := &http.Server{
 			Addr:              cfg.APIAddr,
 			Handler:           apiHandler,

@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/exaring/otelpgx"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/munisp/blueeconomy-geo-service/internal/store"
@@ -43,6 +44,8 @@ func NewStore(ctx context.Context, app *store.Store, devicesDSN string) (*Store,
 	if err != nil {
 		return nil, fmt.Errorf("devices: parse device-plane DSN: %w", err)
 	}
+	// otelpgx query tracer (no-op when telemetry is disabled).
+	config.ConnConfig.Tracer = otelpgx.NewTracer()
 	pool, err := pgxpool.NewWithConfig(ctx, config)
 	if err != nil {
 		return nil, fmt.Errorf("devices: connect device-plane postgres: %w", err)

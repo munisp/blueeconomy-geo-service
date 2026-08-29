@@ -22,11 +22,19 @@ import (
 	"time"
 
 	gtfs "github.com/MobilityData/gtfs-realtime-bindings/golang/gtfs"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/protobuf/proto"
 
 	"github.com/munisp/blueeconomy-geo-service/internal/metrics"
 	"github.com/munisp/blueeconomy-geo-service/internal/store"
 )
+
+// tracer returns the GTFS-RT feed builder tracer. With telemetry disabled
+// the global provider is a no-op: feed-build spans are non-recording.
+func tracer() trace.Tracer {
+	return otel.Tracer("github.com/munisp/blueeconomy-geo-service/internal/gtfsrt")
+}
 
 // GtfsRealtimeVersion is the spec version stamped into every FeedHeader.
 const GtfsRealtimeVersion = "2.0"
@@ -362,6 +370,8 @@ func (builder *Builder) matchAssignmentTrip(plan *routePlan, calendarsByID map[s
 // BuildVehiclePositions renders vehiclepositions.pb: one entity per
 // route-assigned vessel with a FRESH position. MMSI = vehicle.id.
 func (builder *Builder) BuildVehiclePositions(ctx context.Context, tenantID string, clearedLabels []string) ([]byte, error) {
+	ctx, span := tracer().Start(ctx, "gtfsrt.build vehiclepositions")
+	defer span.End()
 	started := builder.now()
 	registry, err := builder.store.LoadTransitRegistry(ctx, tenantID)
 	if err != nil {
@@ -430,6 +440,8 @@ func (builder *Builder) BuildVehiclePositions(ctx context.Context, tenantID stri
 // all (NO_SHOW-style omission): a docked or drifting vessel's ETA is
 // unknowable and must not be invented.
 func (builder *Builder) BuildTripUpdates(ctx context.Context, tenantID string, clearedLabels []string) ([]byte, error) {
+	ctx, span := tracer().Start(ctx, "gtfsrt.build tripupdates")
+	defer span.End()
 	started := builder.now()
 	registry, err := builder.store.LoadTransitRegistry(ctx, tenantID)
 	if err != nil {
@@ -573,6 +585,8 @@ func translated(text string) *gtfs.TranslatedString {
 
 // BuildAlerts renders alerts.pb from the tenant's active alerts.
 func (builder *Builder) BuildAlerts(ctx context.Context, tenantID string) ([]byte, error) {
+	ctx, span := tracer().Start(ctx, "gtfsrt.build alerts")
+	defer span.End()
 	started := builder.now()
 	alerts, err := builder.store.ListActiveTransitAlerts(ctx, tenantID, started)
 	if err != nil {

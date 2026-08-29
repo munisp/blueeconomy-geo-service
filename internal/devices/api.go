@@ -18,11 +18,22 @@ import (
 	"strings"
 	"time"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/munisp/blueeconomy-geo-service/internal/auth"
 	"github.com/munisp/blueeconomy-geo-service/internal/bus"
 	"github.com/munisp/blueeconomy-geo-service/internal/metrics"
 	"github.com/munisp/blueeconomy-geo-service/internal/sign"
 )
+
+// tracer returns the device-plane tracer. With telemetry disabled the
+// global provider is a no-op: spans are non-recording and the verify path
+// is unaffected.
+func tracer() trace.Tracer {
+	return otel.Tracer("github.com/munisp/blueeconomy-geo-service/internal/devices")
+}
 
 // EventPublisher publishes service-signed geo.*.v1 envelopes (the hot-path
 // connectors.Pipeline in production; a recording stub in tests).
@@ -588,11 +599,18 @@ type mqttAuthRequest struct {
 // (action MQTT_AUTH, optionally "Device <jws>"). The response is always
 // HTTP 200 with result allow/deny; is_superuser is NEVER granted.
 func (api *API) serveMQTTAuth(writer http.ResponseWriter, request *http.Request) {
+	// MQTT auth webhook span: the EMQX proof-verification boundary is always
+	// traced (result is an attribute, never a metric label beyond the
+	// existing allow/deny counter).
+	ctx, span := tracer().Start(request.Context(), "geo.devices.mqtt_auth")
+	defer span.End()
+	request = request.WithContext(ctx)
 	var body mqttAuthRequest
 	if !decodeJSON(writer, request, &body, 1<<16) {
 		return
 	}
 	deny := func() {
+		span.SetAttributes(attribute.String("geo.mqtt_auth.result", "deny"))
 		api.Metrics.Inc("geo_device_mqtt_auth_total", map[string]string{"result": "deny"})
 		writeDeviceJSON(writer, http.StatusOK, map[string]any{"result": "deny", "is_superuser": false})
 	}
@@ -607,6 +625,7 @@ func (api *API) serveMQTTAuth(writer http.ResponseWriter, request *http.Request)
 		deny()
 		return
 	}
+	span.SetAttributes(attribute.String("geo.mqtt_auth.result", "allow"))
 	api.Metrics.Inc("geo_device_mqtt_auth_total", map[string]string{"result": "allow"})
 	writeDeviceJSON(writer, http.StatusOK, map[string]any{"result": "allow", "is_superuser": false})
 }

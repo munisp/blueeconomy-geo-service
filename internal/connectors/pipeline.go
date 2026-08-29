@@ -18,6 +18,9 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/munisp/blueeconomy-geo-service/internal/bus"
 	"github.com/munisp/blueeconomy-geo-service/internal/dedup"
@@ -26,6 +29,13 @@ import (
 	"github.com/munisp/blueeconomy-geo-service/internal/store"
 	"github.com/munisp/blueeconomy-geo-service/internal/validate"
 )
+
+// tracer returns the ingest-pipeline tracer. With telemetry disabled the
+// global provider is a no-op: spans are non-recording and the hot path is
+// unaffected.
+func tracer() trace.Tracer {
+	return otel.Tracer("github.com/munisp/blueeconomy-geo-service/internal/connectors")
+}
 
 // Publisher is the Kafka boundary the pipeline writes to (bus.Producer in
 // production; a recording stub in integration tests).
@@ -164,17 +174,36 @@ func (pipeline *Pipeline) HandlePosition(ctx context.Context, ingest IngestPosit
 	}
 
 	// 5. Geofence evaluation (Redis per-vessel zone state → signed events).
-	events, err := pipeline.Store.EvaluateGeofences(ctx, pipeline.ZoneState, position, func() string {
+	// Manual span around the enter/exit transition computation + publish.
+	geofenceCtx, geofenceSpan := tracer().Start(ctx, "geo.geofence.evaluate",
+		trace.WithAttributes(attribute.String("geo.vessel_mmsi", position.MMSI)))
+	events, err := pipeline.Store.EvaluateGeofences(geofenceCtx, pipeline.ZoneState, position, func() string {
 		return "gfe-" + uuid.NewString()
 	})
 	if err != nil {
+		geofenceSpan.RecordError(err)
+		geofenceSpan.End()
 		return fmt.Errorf("geofence evaluation: %w", err)
 	}
+	entries, exits := 0, 0
 	for _, event := range events {
-		if err := pipeline.publishGeofenceEvent(ctx, event); err != nil {
+		if err := pipeline.publishGeofenceEvent(geofenceCtx, event); err != nil {
+			geofenceSpan.RecordError(err)
+			geofenceSpan.End()
 			return err
 		}
+		switch event.Event {
+		case "ENTER":
+			entries++
+		case "EXIT":
+			exits++
+		}
 	}
+	geofenceSpan.SetAttributes(
+		attribute.Int("geo.geofence.enter_count", entries),
+		attribute.Int("geo.geofence.exit_count", exits),
+	)
+	geofenceSpan.End()
 
 	// 6. Raw mirror + signed event publication.
 	if pipeline.PublishRaw && position.SourceClass == sign.SourceAIS {
