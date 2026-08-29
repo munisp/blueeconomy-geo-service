@@ -237,8 +237,16 @@ func (pipeline *Pipeline) HandleStatic(ctx context.Context, ingest IngestStatic)
 		raw, _ := json.Marshal(record)
 		return pipeline.Producer.Publish(ctx, bus.TopicVesselQuarantine, report.MMSI, raw, nil)
 	}
-	if err := pipeline.Store.UpsertVesselStatic(ctx, report); err != nil {
+	applied, err := pipeline.Store.UpsertVesselStatic(ctx, report)
+	if err != nil {
 		return err
+	}
+	if !applied {
+		// Out-of-order static report (observed_at <= current valid_from):
+		// dropped without disturbing the current SCD-2 row; never republish
+		// stale state as a fresh event.
+		pipeline.Metrics.Inc("geo_static_stale_dropped_total", map[string]string{"source_class": report.SourceClass})
+		return nil
 	}
 	payload := sign.VesselStaticReported{
 		StaticReportID:      report.StaticReportID,
