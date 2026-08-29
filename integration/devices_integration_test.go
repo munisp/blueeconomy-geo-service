@@ -448,14 +448,17 @@ func TestDeviceTelemetryIngestAndDLQ(t *testing.T) {
 			StartOffset: kafka.FirstOffset, MinBytes: 1, MaxBytes: 1 << 20, MaxWait: 2 * time.Second,
 		})
 		defer reader.Close()
-		deadline := time.Now().Add(20 * time.Second)
+		deadline := time.Now().Add(45 * time.Second)
 		found := map[string]bool{}
 		for time.Now().Before(deadline) && len(found) < 2 {
 			fetchCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 			message, err := reader.FetchMessage(fetchCtx)
 			cancel()
 			if err != nil {
-				break
+				// Broker hiccup or empty window — keep polling until the
+				// deadline instead of abandoning the assertion early.
+				time.Sleep(500 * time.Millisecond)
+				continue
 			}
 			if string(message.Key) != deviceID {
 				continue
