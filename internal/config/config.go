@@ -16,8 +16,14 @@ import (
 type Config struct {
 	AppEnv string
 
-	PostgresDSN   string
-	RedisAddr     string
+	PostgresDSN string
+	// IngestPostgresDSN authenticates as the least-privilege geo_ingest
+	// LOGIN role (SELECT geofence_zones + INSERT geofence_events only) for
+	// the platform-wide geofence evaluator. Separate connection by design:
+	// the app role must never hold geo_ingest membership
+	// (0008_rls_ingest_login.sql).
+	IngestPostgresDSN string
+	RedisAddr         string
 	KafkaBrokers  []string
 	DedupWindow   time.Duration
 	PublishAISRaw bool
@@ -61,6 +67,7 @@ func FromEnv() (Config, error) {
 	config := Config{
 		AppEnv:            strings.ToLower(strings.TrimSpace(getenv("APP_ENV", "dev"))),
 		PostgresDSN:       strings.TrimSpace(os.Getenv("GEO_PG_DSN")),
+		IngestPostgresDSN: strings.TrimSpace(os.Getenv("GEO_INGEST_PG_DSN")),
 		RedisAddr:         strings.TrimSpace(os.Getenv("GEO_REDIS_ADDR")),
 		KafkaBrokers:      splitCSV(os.Getenv("GEO_KAFKA_BROKERS")),
 		PublishAISRaw:     parseBool(getenv("GEO_PUBLISH_AIS_RAW", "true")),
@@ -94,6 +101,9 @@ func FromEnv() (Config, error) {
 
 	if config.PostgresDSN == "" {
 		return config, errors.New("GEO_PG_DSN must be set")
+	}
+	if config.IngestPostgresDSN == "" {
+		return config, errors.New("GEO_INGEST_PG_DSN must be set (geo_ingest role connection for the platform-wide geofence evaluator)")
 	}
 	if config.RedisAddr == "" {
 		return config, errors.New("GEO_REDIS_ADDR must be set")

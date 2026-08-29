@@ -58,7 +58,7 @@ func run(logger *log.Logger) error {
 	}
 	registry := metrics.NewRegistry()
 
-	storage, err := store.New(ctx, cfg.PostgresDSN)
+	storage, err := store.New(ctx, cfg.PostgresDSN, cfg.IngestPostgresDSN)
 	if err != nil {
 		return err
 	}

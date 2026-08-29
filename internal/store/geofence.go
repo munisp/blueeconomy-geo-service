@@ -122,19 +122,19 @@ func (state *ZoneStateStore) Replace(ctx context.Context, vesselKey string, zone
 	return nil
 }
 
-// withIngestRole runs fn inside a transaction whose role is the explicit
-// platform-wide ingest role geo_ingest (0007_rls_default_deny.sql). The
-// geofence evaluator is the only platform-wide reader/writer: the
-// application role is default-deny when app.tenant_id is unset.
-func (store *Store) withIngestRole(ctx context.Context, fn func(tx pgx.Tx) error) error {
-	tx, err := store.pool.Begin(ctx)
+// withIngestConn runs fn inside a transaction on the dedicated ingest
+// pool, whose connection authenticates AS the geo_ingest role
+// (0008_rls_ingest_login.sql). The geofence evaluator is the only
+// platform-wide reader/writer: the application role is default-deny when
+// app.tenant_id is unset and holds NO geo_ingest membership — privilege
+// separation is by connection, because permissive RLS policies OR across
+// role memberships and would otherwise re-open cross-tenant reads.
+func (store *Store) withIngestConn(ctx context.Context, fn func(tx pgx.Tx) error) error {
+	tx, err := store.ingest.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("begin ingest transaction: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	if _, err := tx.Exec(ctx, `SET LOCAL ROLE geo_ingest`); err != nil {
-		return fmt.Errorf("assume geo_ingest role: %w", err)
-	}
 	if err := fn(tx); err != nil {
 		return err
 	}
@@ -142,7 +142,7 @@ func (store *Store) withIngestRole(ctx context.Context, fn func(tx pgx.Tx) error
 }
 
 // zonesContaining returns the approved zones intersecting the point. It
-// runs as geo_ingest inside withIngestRole — the only platform-wide zone
+// runs on the ingest connection (geo_ingest role) — the only platform-wide zone
 // read path.
 func zonesContaining(ctx context.Context, tx pgx.Tx, latitudeMicros, longitudeMicros int32) ([]Zone, error) {
 	rows, err := tx.Query(ctx, `SELECT zone_id, tenant_id, name, classification_floor
@@ -168,7 +168,7 @@ func zonesContaining(ctx context.Context, tx pgx.Tx, latitudeMicros, longitudeMi
 // against approved zones, updates the Redis zone state, persists the
 // geofence events and returns them for signed publication. Event
 // classification starts at the zone's classification floor. All database
-// work runs as the explicit geo_ingest role in one transaction.
+// work runs on the dedicated geo_ingest-role connection in one transaction.
 func (store *Store) EvaluateGeofences(ctx context.Context, state *ZoneStateStore, position Position, eventID func() string) ([]GeofenceEvent, error) {
 	if state == nil {
 		return nil, errors.New("zone state store is required")
@@ -181,7 +181,7 @@ func (store *Store) EvaluateGeofences(ctx context.Context, state *ZoneStateStore
 		return nil, errors.New("geofence evaluation requires a vessel identity")
 	}
 	events := make([]GeofenceEvent, 0, 2)
-	err := store.withIngestRole(ctx, func(tx pgx.Tx) error {
+	err := store.withIngestConn(ctx, func(tx pgx.Tx) error {
 		zones, err := zonesContaining(ctx, tx, position.LatitudeMicros, position.LongitudeMicros)
 		if err != nil {
 			return err

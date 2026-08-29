@@ -18,35 +18,59 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// Store wraps the Postgres pool.
+// Store wraps the Postgres pools: the tenant-scoped application pool and
+// the dedicated ingest pool (geo_ingest role) used solely by the platform-
+// wide geofence evaluator. The two are separate CONNECTIONS, not a SET
+// ROLE — permissive RLS policies OR across role memberships, so the app
+// role must never hold geo_ingest membership (0008_rls_ingest_login.sql).
 type Store struct {
-	pool *pgxpool.Pool
+	pool   *pgxpool.Pool
+	ingest *pgxpool.Pool
 }
 
-// New connects and verifies the pool; it fails closed when the database is
-// unreachable at startup.
-func New(ctx context.Context, dsn string) (*Store, error) {
+// New connects and verifies both pools; it fails closed when either the
+// application database or the ingest role connection is unreachable at
+// startup. ingestDSN authenticates as the geo_ingest role (least
+// privilege: SELECT geofence_zones + INSERT geofence_events only).
+func New(ctx context.Context, dsn, ingestDSN string) (*Store, error) {
 	if strings.TrimSpace(dsn) == "" {
 		return nil, errors.New("postgres DSN is required")
 	}
+	if strings.TrimSpace(ingestDSN) == "" {
+		return nil, errors.New("ingest postgres DSN (geo_ingest role) is required")
+	}
+	pool, err := connectPool(ctx, dsn, "postgres")
+	if err != nil {
+		return nil, err
+	}
+	ingest, err := connectPool(ctx, ingestDSN, "ingest postgres")
+	if err != nil {
+		pool.Close()
+		return nil, err
+	}
+	return &Store{pool: pool, ingest: ingest}, nil
+}
+
+func connectPool(ctx context.Context, dsn, label string) (*pgxpool.Pool, error) {
 	config, err := pgxpool.ParseConfig(dsn)
 	if err != nil {
-		return nil, fmt.Errorf("parse postgres DSN: %w", err)
+		return nil, fmt.Errorf("parse %s DSN: %w", label, err)
 	}
 	pool, err := pgxpool.NewWithConfig(ctx, config)
 	if err != nil {
-		return nil, fmt.Errorf("connect postgres: %w", err)
+		return nil, fmt.Errorf("connect %s: %w", label, err)
 	}
 	if err := pool.Ping(ctx); err != nil {
 		pool.Close()
-		return nil, fmt.Errorf("ping postgres: %w", err)
+		return nil, fmt.Errorf("ping %s: %w", label, err)
 	}
-	return &Store{pool: pool}, nil
+	return pool, nil
 }
 
-// Close releases the pool.
+// Close releases both pools.
 func (store *Store) Close() {
 	store.pool.Close()
+	store.ingest.Close()
 }
 
 // Pool exposes the pool for the migration runner and integration tests.

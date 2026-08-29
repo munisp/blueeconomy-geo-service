@@ -9,6 +9,7 @@ import (
 func baseEnv(t *testing.T) {
 	t.Helper()
 	t.Setenv("GEO_PG_DSN", "postgres://geo:secret@localhost:5432/geo")
+	t.Setenv("GEO_INGEST_PG_DSN", "postgres://geo_ingest:secret@localhost:5432/geo")
 	t.Setenv("GEO_REDIS_ADDR", "localhost:6379")
 	t.Setenv("GEO_KAFKA_BROKERS", "localhost:9092")
 	t.Setenv("GEO_PRODUCER_PRINCIPAL_ID", "svc-geo")

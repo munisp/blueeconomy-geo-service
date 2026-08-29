@@ -14,6 +14,7 @@ package integration
 import (
 	"context"
 	"encoding/json"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -87,18 +88,29 @@ func newHarness(t *testing.T) *harness {
 		t.Skip("GEO_TEST_PG_DSN and GEO_TEST_REDIS_ADDR are required for integration tests")
 	}
 	ctx := context.Background()
-	storage, err := store.New(ctx, dsn)
+	// The ingest geofence evaluator connects AS the geo_ingest LOGIN role
+	// on a dedicated pool (0008_rls_ingest_login.sql). Provision the role's
+	// test password (idempotent) and derive its DSN from the app DSN. The
+	// test role holds NO geo_ingest membership — privilege separation is
+	// by connection, mirroring production.
+	appURL, err := url.Parse(dsn)
+	require.NoError(t, err)
+	appURL.User = url.UserPassword("geo_ingest", "geo_ingest")
+	ingestDSN := appURL.String()
+
+	// Migrate first (0007 creates geo_ingest, 0008 flips it to LOGIN), then
+	// provision the role's test password — only afterwards can the ingest
+	// pool authenticate.
+	migrator, err := store.New(ctx, dsn, dsn)
+	require.NoError(t, err)
+	require.NoError(t, store.Migrate(ctx, migrator, db.MigrationsFS))
+	_, err = migrator.Pool().Exec(ctx, `ALTER ROLE geo_ingest LOGIN PASSWORD 'geo_ingest'`)
+	require.NoError(t, err)
+	migrator.Close()
+
+	storage, err := store.New(ctx, dsn, ingestDSN)
 	require.NoError(t, err)
 	t.Cleanup(storage.Close)
-	require.NoError(t, store.Migrate(ctx, storage, db.MigrationsFS))
-	// The ingest geofence evaluator assumes the explicit platform-wide
-	// geo_ingest role per transaction (0007_rls_default_deny.sql); the
-	// migration grants it to the `geo` app role — grant it to the test
-	// role as well so SET LOCAL ROLE succeeds.
-	_, err = storage.Pool().Exec(ctx, `DO $$ BEGIN
-		EXECUTE format('GRANT geo_ingest TO %I', current_user);
-	END $$;`)
-	require.NoError(t, err)
 	require.NoError(t, storage.EnsurePositionPartitions(ctx, time.Now(), time.Now().Add(24*time.Hour)))
 
 	redisClient := redis.NewClient(&redis.Options{Addr: redisAddr})
@@ -254,16 +266,25 @@ func TestGeofenceEnterExit(t *testing.T) {
 	outside2.Position.ObservedAt = inside.Position.ObservedAt.Add(30 * time.Minute)
 	require.NoError(t, h.pipeline.HandlePosition(ctx, outside2))
 
-	rows, err := h.store.Pool().Query(ctx,
-		`SELECT event FROM geofence_events WHERE zone_id = $1 ORDER BY occurred_at`, testZoneID)
-	require.NoError(t, err)
-	defer rows.Close()
+	// Tenant-governed events are default-deny without a bound tenant; read
+	// them the way the API does — inside a tenant-bound transaction.
 	events := make([]string, 0)
-	for rows.Next() {
-		var event string
-		require.NoError(t, rows.Scan(&event))
-		events = append(events, event)
-	}
+	require.NoError(t, h.store.WithTenant(ctx, testTenant, func(tx pgx.Tx) error {
+		rows, err := tx.Query(ctx,
+			`SELECT event FROM geofence_events WHERE zone_id = $1 ORDER BY occurred_at`, testZoneID)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var event string
+			if err := rows.Scan(&event); err != nil {
+				return err
+			}
+			events = append(events, event)
+		}
+		return rows.Err()
+	}))
 	require.Equal(t, []string{"ENTER", "EXIT"}, events)
 
 	// Signed geofence envelopes were published with the zone classification
