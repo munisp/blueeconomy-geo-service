@@ -445,7 +445,8 @@ func (api *API) ingestTelemetry(writer http.ResponseWriter, request *http.Reques
 	switch envelope.PayloadType {
 	case sign.EventVesselPosition:
 		var payload sign.VesselPositionReported
-		if err := json.Unmarshal(envelope.Payload, &payload); err != nil || !mmsiLike(payload.MMSI) {
+		if err := json.Unmarshal(envelope.Payload, &payload); err != nil || !mmsiLike(payload.MMSI) ||
+			!validClassification(payload.Classification) {
 			api.deadLetter(request, deviceID, ReasonPayloadUnsupported, body)
 			writeDeviceJSON(writer, http.StatusAccepted, map[string]any{"status": "dead-lettered", "reason": ReasonPayloadUnsupported})
 			return
@@ -453,7 +454,8 @@ func (api *API) ingestTelemetry(writer http.ResponseWriter, request *http.Reques
 		api.forwardTelemetry(writer, request, envelope, verified, sign.EventVesselPosition, payload, payload.Classification)
 	case sign.EventVesselStatic:
 		var payload sign.VesselStaticReported
-		if err := json.Unmarshal(envelope.Payload, &payload); err != nil || !mmsiLike(payload.MMSI) {
+		if err := json.Unmarshal(envelope.Payload, &payload); err != nil || !mmsiLike(payload.MMSI) ||
+			!validClassification(payload.Classification) {
 			api.deadLetter(request, deviceID, ReasonPayloadUnsupported, body)
 			writeDeviceJSON(writer, http.StatusAccepted, map[string]any{"status": "dead-lettered", "reason": ReasonPayloadUnsupported})
 			return
@@ -651,6 +653,13 @@ func (api *API) audit(request *http.Request, event AuditEvent) {
 	if err := api.Verifier.Reader.InsertAudit(request.Context(), event); err != nil {
 		api.Metrics.Inc("geo_device_audit_errors_total", nil)
 	}
+}
+
+// validClassification fails closed on payloads without a geo-ladder
+// classification (the envelope contract requires it).
+func validClassification(value string) bool {
+	_, err := sign.ParseClassification(value)
+	return err == nil
 }
 
 func mmsiLike(value string) bool {
