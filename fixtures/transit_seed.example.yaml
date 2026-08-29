@@ -1,0 +1,66 @@
+# Transit registry seed (documented format for cmd/geo-transitseed).
+# The registry is the operator-maintained source of truth behind the GTFS
+# static feed, the GTFS-RT producer and the ETA engine. Coordinates are
+# fixed-point micro-degrees (geo.*.v1 doctrine); times are SECONDS after
+# midnight (agency timezone); stop sequences are assigned 1..N in document
+# order. YAML is a superset of JSON — both formats load through the same
+# path. Everything upserts idempotently.
+agencies:
+  - agency_id: niwa
+    name: National Inland Waterways Authority
+    url: https://niwa.gov.ng
+    timezone: Africa/Lagos
+    lang: en
+
+routes:
+  - route_id: R-MARINA-IKORODU
+    agency_id: niwa
+    short_name: F1
+    long_name: Marina — Ikorodu
+    route_type: 4            # 4 = ferry (GTFS)
+    default_speed_milliknots: 8000   # ETA fallback ONLY (8 kn)
+    active: true
+
+stops:
+  - stop_id: JETTY-MARINA
+    name: Marina Jetty
+    latitude_micros: 6451830
+    longitude_micros: 3400100
+    zone_id: LAGOS-CENTRAL
+  - stop_id: JETTY-FALOMO
+    name: Falomo Jetty
+    latitude_micros: 6435500
+    longitude_micros: 3417600
+    zone_id: LAGOS-CENTRAL
+  - stop_id: JETTY-IKORODU
+    name: Ikorodu Terminal
+    latitude_micros: 6619400
+    longitude_micros: 3503300
+    zone_id: IKORODU
+
+calendars:
+  - service_id: WEEKDAY
+    weekdays: [true, true, true, true, true, false, false]  # Mon..Sun
+    start_date: "2026-01-01"
+    end_date: "2027-12-31"
+
+trips:
+  - trip_id: F1-0800-OUT
+    route_id: R-MARINA-IKORODU
+    service_id: WEEKDAY
+    headsign: Ikorodu
+    direction_id: 0
+
+stop_times:
+  - trip_id: F1-0800-OUT
+    stops:
+      - { stop_id: JETTY-MARINA, arrival_seconds: 28800, departure_seconds: 28800 }   # 08:00
+      - { stop_id: JETTY-FALOMO, arrival_seconds: 29700, departure_seconds: 29820 }   # 08:15/08:17
+      - { stop_id: JETTY-IKORODU, arrival_seconds: 32400, departure_seconds: 32400 }  # 09:00
+
+assignments:
+  - route_id: R-MARINA-IKORODU
+    mmsi: "657123400"       # MMSI = GTFS-RT vehicle.id
+    imo: ""
+    valid_from: "2026-01-01T00:00:00Z"
+    valid_to: ""            # open-ended

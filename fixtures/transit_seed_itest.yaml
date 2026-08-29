@@ -1,0 +1,32 @@
+# Integration-test seed (itest-* IDs so cleanTransit can remove the rows).
+agencies:
+  - agency_id: itest-agency
+    name: ITest Waterways
+    url: https://example.test
+    timezone: UTC
+routes:
+  - route_id: itest-route-1
+    agency_id: itest-agency
+    short_name: T1
+    long_name: ITest Straight Route
+    route_type: 4
+    default_speed_milliknots: 8000
+stops:
+  - { stop_id: itest-stop-a, name: Alpha Jetty, latitude_micros: 6451830, longitude_micros: 3400100 }
+  - { stop_id: itest-stop-b, name: Bravo Jetty, latitude_micros: 6435500, longitude_micros: 3417600 }
+  - { stop_id: itest-stop-c, name: Charlie Jetty, latitude_micros: 6619400, longitude_micros: 3503300 }
+calendars:
+  - service_id: itest-daily
+    weekdays: [true, true, true, true, true, true, true]
+    start_date: "2026-01-01"
+    end_date: "2027-12-31"
+trips:
+  - { trip_id: itest-trip-1, route_id: itest-route-1, service_id: itest-daily, headsign: Charlie }
+stop_times:
+  - trip_id: itest-trip-1
+    stops:
+      - { stop_id: itest-stop-a, arrival_seconds: 28800, departure_seconds: 28800 }
+      - { stop_id: itest-stop-b, arrival_seconds: 29700, departure_seconds: 29820 }
+      - { stop_id: itest-stop-c, arrival_seconds: 32400, departure_seconds: 32400 }
+assignments:
+  - { route_id: itest-route-1, mmsi: "657990099" }
