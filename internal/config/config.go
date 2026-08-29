@@ -27,6 +27,14 @@ type Config struct {
 	PrincipalID   string
 	PrincipalRole string
 
+	// PositionPlane declares the scoping doctrine of the vessel position
+	// plane (ais_positions / latest_positions / vessels_static and the
+	// /v1/geo vessel + track reads). Only "shared" is supported: a single
+	// national picture scoped by classification clearance, NOT by tenant
+	// (the tables carry no tenant column). "tenant" fails closed at startup
+	// because the schema has no tenant support for positions.
+	PositionPlane string
+
 	// HTTP API.
 	APIAddr string
 	// Auth mode: "oidc" (Keycloak RS256) or "trusted_proxy" (edge loopback).
@@ -58,6 +66,7 @@ func FromEnv() (Config, error) {
 		PublishAISRaw:     parseBool(getenv("GEO_PUBLISH_AIS_RAW", "true")),
 		PrincipalID:       strings.TrimSpace(os.Getenv("GEO_PRODUCER_PRINCIPAL_ID")),
 		PrincipalRole:     strings.TrimSpace(getenv("GEO_PRODUCER_PRINCIPAL_ROLE", "")),
+		PositionPlane:     strings.ToLower(strings.TrimSpace(getenv("GEO_POSITION_PLANE", "shared"))),
 		APIAddr:           strings.TrimSpace(getenv("GEO_API_ADDR", "")),
 		AuthMode:          strings.ToLower(strings.TrimSpace(getenv("GEO_AUTH_MODE", "oidc"))),
 		OIDCIssuer:        strings.TrimSpace(os.Getenv("GEO_OIDC_ISSUER")),
@@ -97,6 +106,12 @@ func FromEnv() (Config, error) {
 	}
 	if config.ReplayFile != "" && (config.AppEnv == "prod" || config.AppEnv == "production") {
 		return config, errors.New("GEO_REPLAY_FILE is forbidden when APP_ENV=prod")
+	}
+	if config.PositionPlane != "shared" {
+		// Fail closed: a tenant-scoped position plane was requested but the
+		// position schema has no tenant column — silently falling back to
+		// the shared picture would mis-scope national tracking data.
+		return config, fmt.Errorf("GEO_POSITION_PLANE %q is unsupported: the vessel position plane is a single shared national picture scoped by classification clearance; tenant scoping has no schema support", config.PositionPlane)
 	}
 	if config.APIAddr != "" {
 		switch config.AuthMode {

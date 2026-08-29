@@ -49,13 +49,38 @@ Migrations `db/migrations/0001..0004` (embedded, applied at startup unless
   observed time.
 - `geofence_events`, `app_position_reports`, `sos_alerts` — with
   `UNIQUE(reporter_id, outbox_id)` idempotency and the SOS RESTRICTED
-  classification floor enforced by CHECK.
-- FORCE ROW LEVEL SECURITY + tenant policies on the tenant-scoped read
-  paths (`app.tenant_id` bound per transaction; unset = platform-wide ingest
-  evaluation context, see `0004_rls.sql`).
+  classification floor enforced by CHECK. `sos_alerts` additionally carries
+  the lifecycle ledger (`acknowledged_by/at/note`, `resolved_by/at/note`,
+  state/ledger coherence CHECK) behind
+  `POST /v1/geo/sos/{id}/acknowledge|resolve`.
+- FORCE ROW LEVEL SECURITY + tenant policies on the tenant-scoped tables
+  (`app.tenant_id` bound per transaction). Since `0007_rls_default_deny.sql`
+  an unbound session is **default-deny**: the tenant predicate compares
+  against the bound GUC only — no NULL/'' admit clause. The one legitimate
+  platform-wide path, the ingest geofence evaluator, runs as the explicit
+  `geo_ingest` role (NOLOGIN, NOBYPASSRLS; `SET LOCAL ROLE` per transaction)
+  with its own narrow policies (SELECT zones, INSERT crossings).
 
 Role convention: the application connects as `geo` (NOSUPERUSER NOBYPASSRLS);
 migrations run as the table-owning migrator role.
+
+## Position plane scoping (GE-4 doctrine statement)
+
+The vessel position plane — `ais_positions`, `latest_positions`,
+`vessels_static` and the `GET /v1/geo/vessels*` read models — is a **single
+shared national picture scoped by classification clearance, NOT by tenant**.
+These tables deliberately carry no tenant column: the national maritime
+picture is one shared asset, and the classification ladder (reader clearance
+>= row classification) is the access boundary, identical to the
+maritime-intelligence doctrine. Tenant isolation (RLS) governs only the
+tenant-owned geofence objects (`geofence_zones`, `geofence_events`); a
+vessel-360 zone history is read with the caller's tenant bound and is empty
+for tenant-less principals.
+
+`GEO_POSITION_PLANE` (default `shared`) pins this contract: setting it to
+`tenant` (or any other value) **fails closed at startup** because the
+position schema has no tenant support — a mis-scoped deployment must never
+silently fall back to the shared plane.
 
 ## Real-source setup
 
@@ -73,7 +98,8 @@ when absent), `GEO_PRODUCER_PRINCIPAL_ID`, `GEO_PRODUCER_PRINCIPAL_ROLE`,
 `GEO_OIDC_AUDIENCE`, `GEO_OIDC_JWKS_URL`) or `trusted_proxy`
 (`GEO_TRUSTED_PROXY_CIDRS`, `GEO_TRUSTED_PROXY_ID`).
 `GEO_DEDUP_WINDOW` (10s–30s, default 15s), `GEO_PUBLISH_AIS_RAW` (default
-true).
+true), `GEO_POSITION_PLANE` (default `shared`; anything else fails closed —
+see "Position plane scoping").
 
 ## Dev fixtures (synthetic, format-valid)
 
@@ -105,7 +131,10 @@ go test ./integration/...
 
 They verify daily-partition routing, geofence ENTER/EXIT with signed
 envelopes, app-report/SOS idempotency (exact-replay absorb, conflict 409),
-SCD-2 static upsert and tenant RLS.
+SCD-2 static upsert (in-order rotation and out-of-order drop), tenant RLS
+(default-deny when unbound, explicit `geo_ingest` role for the evaluator)
+and the SOS lifecycle (gate 403, illegal transition 409, signed
+acknowledged/resolved envelopes).
 
 ## Docker / CI
 

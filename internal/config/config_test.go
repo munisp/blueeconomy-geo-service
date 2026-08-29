@@ -56,3 +56,28 @@ func TestFromEnvAPIRequiresAuthConfig(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "oidc", config.AuthMode)
 }
+
+func TestFromEnvPositionPlane(t *testing.T) {
+	baseEnv(t)
+	// Default: the shared national picture.
+	config, err := FromEnv()
+	require.NoError(t, err)
+	require.Equal(t, "shared", config.PositionPlane)
+
+	// Explicit shared is accepted.
+	t.Setenv("GEO_POSITION_PLANE", "shared")
+	config, err = FromEnv()
+	require.NoError(t, err)
+	require.Equal(t, "shared", config.PositionPlane)
+
+	// Tenant scoping has no schema support: fail closed, never silently
+	// fall back to the shared plane.
+	t.Setenv("GEO_POSITION_PLANE", "tenant")
+	_, err = FromEnv()
+	require.Error(t, err, "tenant position plane must fail closed without schema support")
+
+	// Unknown values fail closed as well.
+	t.Setenv("GEO_POSITION_PLANE", "regional")
+	_, err = FromEnv()
+	require.Error(t, err, "unknown position plane must fail closed")
+}
