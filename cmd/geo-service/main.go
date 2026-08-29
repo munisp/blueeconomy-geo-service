@@ -193,7 +193,8 @@ func run(logger *log.Logger) error {
 		} else if deviceHandler != nil {
 			geoHandler := apiHandler
 			apiHandler = http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-				if strings.HasPrefix(request.URL.Path, "/v1/devices/") {
+				if strings.HasPrefix(request.URL.Path, "/v1/devices/") ||
+					strings.HasPrefix(request.URL.Path, "/v1/device-provisioning/") {
 					deviceHandler.ServeHTTP(writer, request)
 					return
 				}

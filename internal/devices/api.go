@@ -82,10 +82,14 @@ func (api *API) RegisterRoutes(mux *http.ServeMux, authenticator auth.Authentica
 			auth.RequireRoles(http.HandlerFunc(handler), roles...)))
 	}
 	readRoles := []string{"geo-device-reader", "geo-device-maker", "geo-device-checker", "geo-device-admin"}
-	admin("POST /v1/devices/provisioning-requests", api.createProvisionRequest, "geo-device-maker", "geo-device-admin")
-	admin("GET /v1/devices/provisioning-requests/{id}", api.getProvisionRequest, readRoles...)
-	admin("POST /v1/devices/provisioning-requests/{id}/approve", api.approveProvisionRequest, "geo-device-checker", "geo-device-admin")
-	admin("POST /v1/devices/provisioning-requests/{id}/reject", api.rejectProvisionRequest, "geo-device-checker", "geo-device-admin")
+	// Provisioning administration lives under its own literal prefix:
+	// "GET /v1/devices/provisioning-requests/{id}" would be ambiguous with
+	// "GET /v1/devices/{id}/firmware" under Go 1.22+ ServeMux specificity
+	// rules (boot-fatal registration panic).
+	admin("POST /v1/device-provisioning/requests", api.createProvisionRequest, "geo-device-maker", "geo-device-admin")
+	admin("GET /v1/device-provisioning/requests/{id}", api.getProvisionRequest, readRoles...)
+	admin("POST /v1/device-provisioning/requests/{id}/approve", api.approveProvisionRequest, "geo-device-checker", "geo-device-admin")
+	admin("POST /v1/device-provisioning/requests/{id}/reject", api.rejectProvisionRequest, "geo-device-checker", "geo-device-admin")
 	admin("GET /v1/devices", api.listDevices, readRoles...)
 	admin("GET /v1/devices/{id}", api.getDevice, readRoles...)
 	admin("POST /v1/devices/{id}/status", api.setDeviceStatus, "geo-device-admin")
@@ -139,7 +143,7 @@ type provisionRequestBody struct {
 	Metadata    map[string]string `json:"metadata"`
 }
 
-// createProvisionRequest: POST /v1/devices/provisioning-requests (maker).
+// createProvisionRequest: POST /v1/device-provisioning/requests (maker).
 // 202 PENDING mirrors the platform credential-verification pattern: the
 // resource exists only as a pending decision until a checker acts.
 func (api *API) createProvisionRequest(writer http.ResponseWriter, request *http.Request) {

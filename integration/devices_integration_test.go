@@ -199,7 +199,7 @@ func (h *deviceHarness) provisionDevice(t *testing.T, tenant, kind string) (stri
 	t.Helper()
 	public, private, err := ed25519.GenerateKey(rand.Reader)
 	require.NoError(t, err)
-	response := h.adminRequest(t, "POST", "/v1/devices/provisioning-requests", "itest-maker",
+	response := h.adminRequest(t, "POST", "/v1/device-provisioning/requests", "itest-maker",
 		"geo-device-maker", tenant, map[string]any{
 			"kind": kind, "ownerAgency": "itest-agency", "label": "itest device",
 			"publicKey": base64.RawURLEncoding.EncodeToString(public),
@@ -212,7 +212,7 @@ func (h *deviceHarness) provisionDevice(t *testing.T, tenant, kind string) (stri
 	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &created))
 	require.Equal(t, devices.RequestPending, created.Status)
 
-	response = h.adminRequest(t, "POST", "/v1/devices/provisioning-requests/"+created.RequestID+"/approve",
+	response = h.adminRequest(t, "POST", "/v1/device-provisioning/requests/"+created.RequestID+"/approve",
 		"itest-checker", "geo-device-checker", tenant, nil)
 	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
 	var approved struct {
@@ -292,7 +292,7 @@ func TestDeviceProvisioningMakerChecker(t *testing.T) {
 
 	public, _, err := ed25519.GenerateKey(rand.Reader)
 	require.NoError(t, err)
-	response := h.adminRequest(t, "POST", "/v1/devices/provisioning-requests", "itest-maker",
+	response := h.adminRequest(t, "POST", "/v1/device-provisioning/requests", "itest-maker",
 		"geo-device-maker", devTenantA, map[string]any{
 			"kind": devices.KindGT06, "ownerAgency": "itest-agency", "label": "four-eyes device",
 			"publicKey": base64.RawURLEncoding.EncodeToString(public),
@@ -304,7 +304,7 @@ func TestDeviceProvisioningMakerChecker(t *testing.T) {
 	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &created))
 
 	// Self-approval is refused by the application (four-eyes).
-	response = h.adminRequest(t, "POST", "/v1/devices/provisioning-requests/"+created.RequestID+"/approve",
+	response = h.adminRequest(t, "POST", "/v1/device-provisioning/requests/"+created.RequestID+"/approve",
 		"itest-maker", "geo-device-checker", devTenantA, nil)
 	require.Equal(t, http.StatusConflict, response.Code, response.Body.String())
 	require.Contains(t, response.Body.String(), "four-eyes")
@@ -319,22 +319,22 @@ func TestDeviceProvisioningMakerChecker(t *testing.T) {
 
 	// A distinct checker approves; a second decision is refused
 	// (consume-on-use on the decision itself).
-	response = h.adminRequest(t, "POST", "/v1/devices/provisioning-requests/"+created.RequestID+"/approve",
+	response = h.adminRequest(t, "POST", "/v1/device-provisioning/requests/"+created.RequestID+"/approve",
 		"itest-checker", "geo-device-checker", devTenantA, nil)
 	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
-	response = h.adminRequest(t, "POST", "/v1/devices/provisioning-requests/"+created.RequestID+"/approve",
+	response = h.adminRequest(t, "POST", "/v1/device-provisioning/requests/"+created.RequestID+"/approve",
 		"itest-checker-2", "geo-device-checker", devTenantA, nil)
 	require.Equal(t, http.StatusConflict, response.Code)
 
 	// Reject flow on a fresh request.
-	response = h.adminRequest(t, "POST", "/v1/devices/provisioning-requests", "itest-maker",
+	response = h.adminRequest(t, "POST", "/v1/device-provisioning/requests", "itest-maker",
 		"geo-device-maker", devTenantA, map[string]any{
 			"kind": devices.KindSensor, "ownerAgency": "itest-agency", "label": "reject me",
 			"publicKey": base64.RawURLEncoding.EncodeToString(public),
 		})
 	require.Equal(t, http.StatusAccepted, response.Code)
 	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &created))
-	response = h.adminRequest(t, "POST", "/v1/devices/provisioning-requests/"+created.RequestID+"/reject",
+	response = h.adminRequest(t, "POST", "/v1/device-provisioning/requests/"+created.RequestID+"/reject",
 		"itest-checker", "geo-device-checker", devTenantA, nil)
 	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
 
