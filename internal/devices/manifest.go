@@ -6,8 +6,11 @@
 package devices
 
 import (
+	"bytes"
+	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/binary"
+	"errors"
 	"time"
 )
 
@@ -71,4 +74,29 @@ func SignManifest(manifest Manifest, sign func(kid string, payload any) (string,
 	}
 	manifest.Signature = signature
 	return manifest, nil
+}
+
+// VerifyManifest checks the manifest JWS against the service public key:
+// the kid must match the service signing key, the payload must be the
+// JCS-canonical manifest minus the signature field and the EdDSA
+// signature must verify. This is the device-side verification contract
+// (also used by the integration tests).
+func VerifyManifest(manifest Manifest, publicKey ed25519.PublicKey, expectedKeyID string) error {
+	if manifest.Signature == "" {
+		return errors.New("manifest is unsigned")
+	}
+	unsigned := manifest
+	unsigned.Signature = ""
+	expected, err := canonicalJSON(unsigned)
+	if err != nil {
+		return err
+	}
+	payloadBytes, err := verifyJWS(manifest.Signature, expectedKeyID, publicKey)
+	if err != nil {
+		return err
+	}
+	if !bytes.Equal(payloadBytes, expected) {
+		return errors.New("manifest does not match the signed canonical payload")
+	}
+	return nil
 }
