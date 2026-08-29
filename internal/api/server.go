@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/munisp/blueeconomy-geo-service/internal/auth"
+	"github.com/munisp/blueeconomy-geo-service/internal/gtfsrt"
 	"github.com/munisp/blueeconomy-geo-service/internal/metrics"
 	"github.com/munisp/blueeconomy-geo-service/internal/sign"
 	"github.com/munisp/blueeconomy-geo-service/internal/store"
@@ -43,6 +44,11 @@ type Server struct {
 	// it is not wired — a lifecycle transition that cannot be announced
 	// must never silently persist.
 	SOSEvents SignedEnvelopePublisher
+	// RealtimeFeeds builds the GTFS-RT feeds; StaticFeeds the GTFS static
+	// archive. Both are wired by AttachFeeds (the feed endpoints fail
+	// closed with 503 when unwired).
+	RealtimeFeeds *gtfsrt.Builder
+	StaticFeeds   StaticFeedBuilder
 }
 
 // NewServer validates the wiring fail-closed.
@@ -77,6 +83,14 @@ func (server *Server) Handler(authenticator auth.Authenticator, appReportRoutes 
 		auth.RequireRoles(http.HandlerFunc(server.acknowledgeSOS), "geo-sos-reader", "geo-admin"))
 	mux.Handle("POST /v1/geo/sos/{id}/resolve",
 		auth.RequireRoles(http.HandlerFunc(server.resolveSOS), "geo-sos-reader", "geo-admin"))
+	// GTFS static + GTFS-RT feeds (advisory §5) and the transit-alerts
+	// admin path. Feed reads sit on the standard read role set.
+	read("GET /feeds/gtfs.zip", server.serveGTFSZip)
+	read("GET /feeds/gtfs-rt/vehiclepositions.pb", server.serveRealtime("vehiclepositions"))
+	read("GET /feeds/gtfs-rt/tripupdates.pb", server.serveRealtime("tripupdates"))
+	read("GET /feeds/gtfs-rt/alerts.pb", server.serveRealtime("alerts"))
+	mux.Handle("POST /v1/geo/transit/alerts",
+		auth.RequireRoles(http.HandlerFunc(server.createTransitAlert), "geo-transit-admin", "geo-admin"))
 	if appReportRoutes != nil {
 		appReportRoutes(mux)
 	}

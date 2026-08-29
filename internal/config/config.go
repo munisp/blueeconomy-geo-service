@@ -24,9 +24,9 @@ type Config struct {
 	// (0008_rls_ingest_login.sql).
 	IngestPostgresDSN string
 	RedisAddr         string
-	KafkaBrokers  []string
-	DedupWindow   time.Duration
-	PublishAISRaw bool
+	KafkaBrokers      []string
+	DedupWindow       time.Duration
+	PublishAISRaw     bool
 
 	// Principal identity asserted in envelope provenance (Keycloak service
 	// account subject; never a credential).
@@ -51,6 +51,16 @@ type Config struct {
 	OIDCCAFile        string
 	TrustedProxyCIDRs string
 	TrustedProxyID    string
+
+	// GTFS-RT producer knobs (advisory §5). StaleAfter is the position
+	// staleness threshold: older positions → entity omitted, never
+	// interpolated. The remaining knobs tune the stop snap and ETA engine.
+	GTFSRTStaleAfter            time.Duration
+	GTFSRTSnapMaxMeters         float64
+	GTFSRTStopArriveMeters      float64
+	GTFSRTStopSpeedMilliknots   uint32
+	GTFSRTETAMinSpeedMilliknots uint32
+	GTFSRTSpeedSamples          int
 
 	// Connectors (each independently gated).
 	NMEATCPAddr     string
@@ -98,6 +108,37 @@ func FromEnv() (Config, error) {
 		return config, fmt.Errorf("GEO_REPLAY_INTERVAL: %w", err)
 	}
 	config.ReplayInterval = replayInterval
+	staleAfter, err := time.ParseDuration(getenv("GEO_GTFSRT_STALE_AFTER", "120s"))
+	if err != nil {
+		return config, fmt.Errorf("GEO_GTFSRT_STALE_AFTER: %w", err)
+	}
+	if staleAfter <= 0 {
+		return config, errors.New("GEO_GTFSRT_STALE_AFTER must be positive (fail-closed staleness threshold)")
+	}
+	config.GTFSRTStaleAfter = staleAfter
+	config.GTFSRTSnapMaxMeters, err = parsePositiveFloat(getenv("GEO_GTFSRT_SNAP_MAX_METERS", "200"))
+	if err != nil {
+		return config, fmt.Errorf("GEO_GTFSRT_SNAP_MAX_METERS: %w", err)
+	}
+	config.GTFSRTStopArriveMeters, err = parsePositiveFloat(getenv("GEO_GTFSRT_STOP_ARRIVE_METERS", "20"))
+	if err != nil {
+		return config, fmt.Errorf("GEO_GTFSRT_STOP_ARRIVE_METERS: %w", err)
+	}
+	stopSpeed, err := strconv.ParseUint(getenv("GEO_GTFSRT_STOP_SPEED_MILLIKNOTS", "500"), 10, 32)
+	if err != nil {
+		return config, fmt.Errorf("GEO_GTFSRT_STOP_SPEED_MILLIKNOTS: %w", err)
+	}
+	config.GTFSRTStopSpeedMilliknots = uint32(stopSpeed)
+	etaMinSpeed, err := strconv.ParseUint(getenv("GEO_GTFSRT_ETA_MIN_SPEED_MILLIKNOTS", "1000"), 10, 32)
+	if err != nil {
+		return config, fmt.Errorf("GEO_GTFSRT_ETA_MIN_SPEED_MILLIKNOTS: %w", err)
+	}
+	config.GTFSRTETAMinSpeedMilliknots = uint32(etaMinSpeed)
+	speedSamples, err := strconv.Atoi(getenv("GEO_GTFSRT_SPEED_SAMPLES", "5"))
+	if err != nil || speedSamples <= 0 {
+		return config, fmt.Errorf("GEO_GTFSRT_SPEED_SAMPLES must be a positive integer")
+	}
+	config.GTFSRTSpeedSamples = speedSamples
 
 	if config.PostgresDSN == "" {
 		return config, errors.New("GEO_PG_DSN must be set")
@@ -160,4 +201,16 @@ func splitCSV(value string) []string {
 func parseBool(value string) bool {
 	parsed, err := strconv.ParseBool(value)
 	return err == nil && parsed
+}
+
+// parsePositiveFloat parses a strictly-positive float knob.
+func parsePositiveFloat(value string) (float64, error) {
+	parsed, err := strconv.ParseFloat(value, 64)
+	if err != nil {
+		return 0, err
+	}
+	if parsed <= 0 {
+		return 0, errors.New("must be positive")
+	}
+	return parsed, nil
 }

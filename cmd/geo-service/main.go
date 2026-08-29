@@ -31,6 +31,7 @@ import (
 	"github.com/munisp/blueeconomy-geo-service/internal/config"
 	"github.com/munisp/blueeconomy-geo-service/internal/connectors"
 	"github.com/munisp/blueeconomy-geo-service/internal/dedup"
+	"github.com/munisp/blueeconomy-geo-service/internal/gtfsrt"
 	"github.com/munisp/blueeconomy-geo-service/internal/metrics"
 	"github.com/munisp/blueeconomy-geo-service/internal/sign"
 	"github.com/munisp/blueeconomy-geo-service/internal/store"
@@ -179,6 +180,22 @@ func run(logger *log.Logger) error {
 		// The SOS lifecycle endpoints publish signed transition envelopes
 		// through the hot-path pipeline.
 		server.SOSEvents = pipeline
+		// GTFS static + GTFS-RT feeds (advisory §5): the AIS→GTFS-RT
+		// adapter, staleness-gated and fail-closed.
+		feedBuilder, err := gtfsrt.NewBuilder(storage, registry, gtfsrt.Config{
+			StaleAfter:            cfg.GTFSRTStaleAfter,
+			SnapMaxMeters:         cfg.GTFSRTSnapMaxMeters,
+			StopArriveMeters:      cfg.GTFSRTStopArriveMeters,
+			StopSpeedMilliknots:   cfg.GTFSRTStopSpeedMilliknots,
+			ETAMinSpeedMilliknots: cfg.GTFSRTETAMinSpeedMilliknots,
+			SpeedSampleCount:      cfg.GTFSRTSpeedSamples,
+		})
+		if err != nil {
+			return err
+		}
+		if err := server.AttachFeeds(feedBuilder); err != nil {
+			return err
+		}
 		appReports := &connectors.AppReportHandler{Pipeline: pipeline}
 		httpServer := &http.Server{
 			Addr:              cfg.APIAddr,

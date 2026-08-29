@@ -111,6 +111,65 @@ vessels (`SYNTH TRADER ONE` MMSI 657210300, `SYNTH FERRY TWO` 657221000,
 live traffic. Replay them with `GEO_REPLAY_FILE=fixtures/nmea_replay.txt`;
 the replay connector **refuses to start when `APP_ENV=prod`**.
 
+## Realtime schedules: GTFS static + GTFS-RT (advisory §5)
+
+The transit registry (migration `0009_transit_registry.sql`) is the
+operator-maintained source of truth behind the feeds: `transit_agencies`,
+`transit_routes` (`route_type 4` ferry), `transit_stops` (jetties,
+fixed-point coordinates), `transit_calendars`, `transit_trips`,
+`transit_stop_times` (seconds after midnight, monotonic per trip enforced
+at the storage boundary), `transit_route_vessels` (route ↔ MMSI assignment
+windows) and `transit_alerts`. Every table is tenant-scoped with the 0007
+default-deny RLS posture.
+
+**Seeding.** NIWA/operators keep the registry as a reviewed YAML or JSON
+document and load it idempotently (upserts):
+
+    GEO_PG_DSN=... GEO_INGEST_PG_DSN=... \
+    go run ./cmd/geo-transitseed -tenant niwa -file registry.yaml
+
+Format: `fixtures/transit_seed.example.yaml` (micro-degree coordinates,
+second-after-midnight times, stop sequences assigned in document order).
+
+**Endpoints** (tenant-bound, standard read roles; positions embedded at the
+caller's clearance):
+
+- `GET /feeds/gtfs.zip` — deterministic spec-valid GTFS static archive
+  (agency/routes/stops/trips/stop_times/calendar), strong ETag + 304.
+- `GET /feeds/gtfs-rt/vehiclepositions.pb` — one entity per route-assigned
+  vessel with a FRESH position; MMSI = `vehicle.id`.
+- `GET /feeds/gtfs-rt/tripupdates.pb` — computed per-jetty ETAs.
+- `GET /feeds/gtfs-rt/alerts.pb` — active-window alerts.
+- `POST /v1/geo/transit/alerts` — admin create (`geo-transit-admin` /
+  `geo-admin`; auth required, maker/checker deliberately not required).
+
+**Fail-closed doctrine (never fabricate):**
+
+- Positions older than `GEO_GTFSRT_STALE_AFTER` (default 120s) → the
+  entity is OMITTED from the feed (`geo_gtfsrt_entities_omitted_total`
+  counted per reason), never interpolated or extrapolated.
+- ETAs are computed from reported positions/speeds only: remaining
+  along-route distance / rolling median of the last
+  `GEO_GTFSRT_SPEED_SAMPLES` (default 5) reported SOG values. Crew-entered
+  AIS ETA fields are never read.
+- A vessel with ZERO speed observations is predicted at the route default
+  speed and marked LOW CONFIDENCE (`schedule_relationship=SCHEDULED`,
+  300s per-stop uncertainty vs 60s live) — never passed off as live.
+- A vessel whose smoothed speed is below
+  `GEO_GTFSRT_ETA_MIN_SPEED_MILLIKNOTS` (default 1000 = 1 kn) produces NO
+  trip update (NO_SHOW-style omission, metric
+  `geo_gtfsrt_eta_omitted_total{reason="not_moving"}`): a docked or
+  drifting vessel's ETA is unknowable.
+- Vessels snapped further than `GEO_GTFSRT_SNAP_MAX_METERS` (default 200m)
+  off the route polyline get no stop attribution and no ETA.
+
+Route geometry v1 is the stop-to-stop polyline (no shapes.txt yet); trip
+matching is time-indexed against the service calendar (matching slacks
+15m/30m, code defaults in `internal/gtfsrt`). Feed builds are counted
+(`geo_feed_build_total`, `geo_feed_build_duration_ms_total`,
+`geo_gtfsrt_entities_emitted_total`, `geo_gtfsrt_eta_total{mode}`,
+`geo_gtfsrt_speed_samples_total`).
+
 ## Tests
 
 ```
