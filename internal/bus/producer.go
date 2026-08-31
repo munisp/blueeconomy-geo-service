@@ -14,6 +14,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -94,6 +96,25 @@ func NewProducer(config Config) (*Producer, error) {
 		Async:        false,
 		Balancer:     &kafka.Hash{},
 		BatchTimeout: 50 * time.Millisecond,
+	}
+	// Batching overrides are opt-in via the environment; unset values keep
+	// the defaults above (unchanged behavior).
+	//
+	//	GEO_KAFKA_BATCH_SIZE        messages per batch      (default: 0 = kafka-go default)
+	//	GEO_KAFKA_BATCH_TIMEOUT_MS  linger before flushing  (default: 50, current value)
+	if raw := os.Getenv("GEO_KAFKA_BATCH_SIZE"); raw != "" {
+		value, err := strconv.Atoi(raw)
+		if err != nil || value <= 0 {
+			return nil, fmt.Errorf("GEO_KAFKA_BATCH_SIZE must be a positive integer, got %q", raw)
+		}
+		writer.BatchSize = value
+	}
+	if raw := os.Getenv("GEO_KAFKA_BATCH_TIMEOUT_MS"); raw != "" {
+		value, err := strconv.Atoi(raw)
+		if err != nil || value <= 0 {
+			return nil, fmt.Errorf("GEO_KAFKA_BATCH_TIMEOUT_MS must be a positive integer, got %q", raw)
+		}
+		writer.BatchTimeout = time.Duration(value) * time.Millisecond
 	}
 	return &Producer{writer: writer, attempts: attempts, backoff: backoff, now: time.Now, sleep: sleepContext}, nil
 }

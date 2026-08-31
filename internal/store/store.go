@@ -11,6 +11,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -52,10 +54,53 @@ func New(ctx context.Context, dsn, ingestDSN string) (*Store, error) {
 	return &Store{pool: pool, ingest: ingest}, nil
 }
 
+// ApplyPoolEnv overrides pgx pool sizing from the environment. Every knob is
+// optional: unset (or <= 0) values keep the pgx defaults, so behavior is
+// unchanged for existing deployments.
+//
+//	GEO_DB_POOL_MAX_CONNS          max open connections (default: pgx default, max(4, NumCPU))
+//	GEO_DB_POOL_MIN_CONNS          min idle connections (default: 0)
+//	GEO_DB_POOL_MAX_CONN_IDLE_SEC  max connection idle seconds (default: 1800)
+//	GEO_DB_POOL_MAX_CONN_LIFE_SEC  max connection lifetime seconds (default: 3600)
+func ApplyPoolEnv(config *pgxpool.Config) error {
+	if raw := os.Getenv("GEO_DB_POOL_MAX_CONNS"); raw != "" {
+		value, err := strconv.Atoi(raw)
+		if err != nil || value <= 0 {
+			return fmt.Errorf("GEO_DB_POOL_MAX_CONNS must be a positive integer, got %q", raw)
+		}
+		config.MaxConns = int32(value)
+	}
+	if raw := os.Getenv("GEO_DB_POOL_MIN_CONNS"); raw != "" {
+		value, err := strconv.Atoi(raw)
+		if err != nil || value < 0 {
+			return fmt.Errorf("GEO_DB_POOL_MIN_CONNS must be a non-negative integer, got %q", raw)
+		}
+		config.MinConns = int32(value)
+	}
+	if raw := os.Getenv("GEO_DB_POOL_MAX_CONN_IDLE_SEC"); raw != "" {
+		value, err := strconv.Atoi(raw)
+		if err != nil || value <= 0 {
+			return fmt.Errorf("GEO_DB_POOL_MAX_CONN_IDLE_SEC must be a positive integer, got %q", raw)
+		}
+		config.MaxConnIdleTime = time.Duration(value) * time.Second
+	}
+	if raw := os.Getenv("GEO_DB_POOL_MAX_CONN_LIFE_SEC"); raw != "" {
+		value, err := strconv.Atoi(raw)
+		if err != nil || value <= 0 {
+			return fmt.Errorf("GEO_DB_POOL_MAX_CONN_LIFE_SEC must be a positive integer, got %q", raw)
+		}
+		config.MaxConnLifetime = time.Duration(value) * time.Second
+	}
+	return nil
+}
+
 func connectPool(ctx context.Context, dsn, label string) (*pgxpool.Pool, error) {
 	config, err := pgxpool.ParseConfig(dsn)
 	if err != nil {
 		return nil, fmt.Errorf("parse %s DSN: %w", label, err)
+	}
+	if err := ApplyPoolEnv(config); err != nil {
+		return nil, err
 	}
 	// otelpgx query tracer: every query/batch/copy/acquire emits a span
 	// (no-op when telemetry is disabled; the fail-closed database posture
