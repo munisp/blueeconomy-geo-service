@@ -70,15 +70,18 @@ type Provenance struct {
 // classification is always at least as restrictive as the classification of
 // the event content it carries.
 type Envelope struct {
-	EnvelopeVersion string          `json:"envelopeVersion"`
-	EventID         string          `json:"eventId"`
-	EventType       string          `json:"eventType"`
-	OccurredAt      time.Time       `json:"occurredAt"`
-	Producer        string          `json:"producer"`
-	CorrelationID   string          `json:"correlationId"`
-	Classification  Classification  `json:"classification"`
-	FHIR            json.RawMessage `json:"fhir"`
-	Provenance      Provenance      `json:"provenance"`
+	EnvelopeVersion string         `json:"envelopeVersion"`
+	EventID         string         `json:"eventId"`
+	EventType       string         `json:"eventType"`
+	OccurredAt      time.Time      `json:"occurredAt"`
+	Producer        string         `json:"producer"`
+	CorrelationID   string         `json:"correlationId"`
+	Classification  Classification `json:"classification"`
+	// RecordClassification is the optional per-record clearance label of the
+	// envelope contract (event-envelope.schema.json); empty omits the field.
+	RecordClassification string          `json:"recordClassification,omitempty"`
+	FHIR                 json.RawMessage `json:"fhir"`
+	Provenance           Provenance      `json:"provenance"`
 }
 
 // fhirBundle is the FHIR R4-aligned message Bundle projection. The primary

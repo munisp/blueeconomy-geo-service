@@ -6,6 +6,8 @@ import (
 	"io/fs"
 	"sort"
 	"strings"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // Migrate applies SQL migrations from fsys (directory "migrations") in
@@ -13,7 +15,14 @@ import (
 // schema_migrations. It is idempotent and fails closed on any statement
 // error.
 func Migrate(ctx context.Context, store *Store, fsys fs.FS) error {
-	if _, err := store.pool.Exec(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (
+	return MigratePool(ctx, store.pool, fsys)
+}
+
+// MigratePool is Migrate over a bare pool, for sibling commands that run
+// the shared migration set without wiring the full hot-path Store
+// (cmd/mrv-api).
+func MigratePool(ctx context.Context, pool *pgxpool.Pool, fsys fs.FS) error {
+	if _, err := pool.Exec(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (
 		version TEXT PRIMARY KEY,
 		applied_at TIMESTAMPTZ NOT NULL DEFAULT now())`); err != nil {
 		return fmt.Errorf("create schema_migrations: %w", err)
@@ -32,7 +41,7 @@ func Migrate(ctx context.Context, store *Store, fsys fs.FS) error {
 	for _, name := range names {
 		version := strings.TrimSuffix(name, ".sql")
 		var applied bool
-		if err := store.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM schema_migrations WHERE version = $1)`,
+		if err := pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM schema_migrations WHERE version = $1)`,
 			version).Scan(&applied); err != nil {
 			return fmt.Errorf("check migration %s: %w", version, err)
 		}
@@ -43,7 +52,7 @@ func Migrate(ctx context.Context, store *Store, fsys fs.FS) error {
 		if err != nil {
 			return fmt.Errorf("read migration %s: %w", name, err)
 		}
-		tx, err := store.pool.Begin(ctx)
+		tx, err := pool.Begin(ctx)
 		if err != nil {
 			return fmt.Errorf("begin migration %s: %w", name, err)
 		}

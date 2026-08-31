@@ -74,12 +74,31 @@ func ParsePrivateKey(encoded string) (ed25519.PrivateKey, error) {
 // NewSigner builds a signer from a decoded private key and a decimal
 // key-rotation epoch. It fails closed on an invalid key or epoch.
 func NewSigner(privateKey ed25519.PrivateKey, keyEpoch string) (*Signer, error) {
+	return NewSignerForProducer(privateKey, keyEpoch, Producer)
+}
+
+// NewSignerForProducer builds a signer whose JWS kid is
+// "<producer>-<epoch>" for an explicit producer deployable name (for
+// example "blueeconomy-geo-service-mrv" for the MRV boundary, per
+// blueeconomy-contracts docs/envelope-signature.md §2). The producer name
+// is validated against the kid character contract; anything else fails
+// closed.
+func NewSignerForProducer(privateKey ed25519.PrivateKey, keyEpoch, producer string) (*Signer, error) {
 	if len(privateKey) != ed25519.PrivateKeySize {
 		return nil, fmt.Errorf("envelope signing private key must be %d bytes", ed25519.PrivateKeySize)
 	}
 	public, ok := privateKey.Public().(ed25519.PublicKey)
 	if !ok || len(public) != ed25519.PublicKeySize {
 		return nil, errors.New("envelope signing private key has no valid public half")
+	}
+	producer = strings.TrimSpace(producer)
+	if len(producer) == 0 || len(producer) > 128 {
+		return nil, errors.New("envelope signing producer name is required")
+	}
+	for _, r := range producer {
+		if !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '-' || r == '.' || r == '_') {
+			return nil, fmt.Errorf("envelope signing producer name %q contains a disallowed character", producer)
+		}
 	}
 	keyEpoch = strings.TrimSpace(keyEpoch)
 	if keyEpoch == "" {
@@ -90,13 +109,20 @@ func NewSigner(privateKey ed25519.PrivateKey, keyEpoch string) (*Signer, error) 
 			return nil, fmt.Errorf("envelope signing key epoch %q must be decimal digits", keyEpoch)
 		}
 	}
-	return &Signer{privateKey: privateKey, kid: keyIDPrefix + keyEpoch}, nil
+	return &Signer{privateKey: privateKey, kid: producer + "-" + keyEpoch}, nil
 }
 
 // SignerFromEnv loads the signer from SigningKeyEnv and SigningKeyEpochEnv.
 // It fails closed when either variable is absent or invalid — an unsigned
 // event pipeline must never start.
 func SignerFromEnv() (*Signer, error) {
+	return SignerFromEnvForProducer(Producer)
+}
+
+// SignerFromEnvForProducer loads the signer from SigningKeyEnv and
+// SigningKeyEpochEnv for an explicit producer deployable name (kid
+// "<producer>-<epoch>"; see docs/envelope-signature.md §2).
+func SignerFromEnvForProducer(producer string) (*Signer, error) {
 	encoded := os.Getenv(SigningKeyEnv)
 	if encoded == "" {
 		return nil, fmt.Errorf("%s must be set", SigningKeyEnv)
@@ -109,11 +135,31 @@ func SignerFromEnv() (*Signer, error) {
 	if epoch == "" {
 		return nil, fmt.Errorf("%s must be set", SigningKeyEpochEnv)
 	}
-	signer, err := NewSigner(privateKey, epoch)
+	signer, err := NewSignerForProducer(privateKey, epoch, producer)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", SigningKeyEpochEnv, err)
 	}
 	return signer, nil
+}
+
+// SignCanonical produces the JWS compact serialization (EdDSA, this
+// signer's kid) over an already JCS-canonical (RFC 8785) payload — the
+// artifact-signing primitive for signed JSON documents that are not event
+// envelopes (for example the canonical annual-report artifact anchored by
+// mrv.soc.v1). The payload is used byte-for-byte; callers canonicalize.
+func (signer *Signer) SignCanonical(payload []byte) (string, error) {
+	if len(payload) == 0 || !json.Valid(payload) {
+		return "", errors.New("canonical payload must be valid JSON")
+	}
+	header, err := protectedHeaderJSON(signer.kid)
+	if err != nil {
+		return "", err
+	}
+	header64 := base64.RawURLEncoding.EncodeToString(header)
+	payload64 := base64.RawURLEncoding.EncodeToString(payload)
+	signingInput := header64 + "." + payload64
+	signature := ed25519.Sign(signer.privateKey, []byte(signingInput))
+	return signingInput + "." + base64.RawURLEncoding.EncodeToString(signature), nil
 }
 
 // KeyID is the JWS kid carried in the protected header.
