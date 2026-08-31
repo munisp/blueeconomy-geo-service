@@ -49,6 +49,9 @@ type Server struct {
 	// closed with 503 when unwired).
 	RealtimeFeeds *gtfsrt.Builder
 	StaticFeeds   StaticFeedBuilder
+	// GeoV2 wires the WP-10 surface (versioned geofences, track APIs,
+	// congestion forecast). When nil the v2 routes are not registered.
+	GeoV2 *GeoV2
 }
 
 // NewServer validates the wiring fail-closed.
@@ -93,6 +96,9 @@ func (server *Server) Handler(authenticator auth.Authenticator, appReportRoutes 
 		auth.RequireRoles(http.HandlerFunc(server.createTransitAlert), "geo-transit-admin", "geo-admin"))
 	if appReportRoutes != nil {
 		appReportRoutes(mux)
+	}
+	if server.GeoV2 != nil {
+		server.registerGeoV2Routes(mux)
 	}
 	mux.HandleFunc("GET /healthz", func(writer http.ResponseWriter, _ *http.Request) {
 		writer.Header().Set("Content-Type", "application/json")

@@ -216,6 +216,15 @@ func run(logger *log.Logger) error {
 		// The SOS lifecycle endpoints publish signed transition envelopes
 		// through the hot-path pipeline.
 		server.SOSEvents = pipeline
+		// WP-10 surface: versioned geofences, fence evaluation, track APIs,
+		// congestion forecast. Fence transitions publish through the same
+		// signed-envelope pipeline (fail-closed when unwired).
+		geoV2, err := api.NewGeoV2(storage)
+		if err != nil {
+			return err
+		}
+		geoV2.FenceEvents = pipeline
+		server.GeoV2 = geoV2
 		// GTFS static + GTFS-RT feeds (advisory §5): the AIS→GTFS-RT
 		// adapter, staleness-gated and fail-closed.
 		feedBuilder, err := gtfsrt.NewBuilder(storage, registry, gtfsrt.Config{
