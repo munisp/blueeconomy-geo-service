@@ -49,13 +49,38 @@ Migrations `db/migrations/0001..0004` (embedded, applied at startup unless
   observed time.
 - `geofence_events`, `app_position_reports`, `sos_alerts` — with
   `UNIQUE(reporter_id, outbox_id)` idempotency and the SOS RESTRICTED
-  classification floor enforced by CHECK.
-- FORCE ROW LEVEL SECURITY + tenant policies on the tenant-scoped read
-  paths (`app.tenant_id` bound per transaction; unset = platform-wide ingest
-  evaluation context, see `0004_rls.sql`).
+  classification floor enforced by CHECK. `sos_alerts` additionally carries
+  the lifecycle ledger (`acknowledged_by/at/note`, `resolved_by/at/note`,
+  state/ledger coherence CHECK) behind
+  `POST /v1/geo/sos/{id}/acknowledge|resolve`.
+- FORCE ROW LEVEL SECURITY + tenant policies on the tenant-scoped tables
+  (`app.tenant_id` bound per transaction). Since `0007_rls_default_deny.sql`
+  an unbound session is **default-deny**: the tenant predicate compares
+  against the bound GUC only — no NULL/'' admit clause. The one legitimate
+  platform-wide path, the ingest geofence evaluator, runs as the explicit
+  `geo_ingest` role (NOLOGIN, NOBYPASSRLS; `SET LOCAL ROLE` per transaction)
+  with its own narrow policies (SELECT zones, INSERT crossings).
 
 Role convention: the application connects as `geo` (NOSUPERUSER NOBYPASSRLS);
 migrations run as the table-owning migrator role.
+
+## Position plane scoping (GE-4 doctrine statement)
+
+The vessel position plane — `ais_positions`, `latest_positions`,
+`vessels_static` and the `GET /v1/geo/vessels*` read models — is a **single
+shared national picture scoped by classification clearance, NOT by tenant**.
+These tables deliberately carry no tenant column: the national maritime
+picture is one shared asset, and the classification ladder (reader clearance
+>= row classification) is the access boundary, identical to the
+maritime-intelligence doctrine. Tenant isolation (RLS) governs only the
+tenant-owned geofence objects (`geofence_zones`, `geofence_events`); a
+vessel-360 zone history is read with the caller's tenant bound and is empty
+for tenant-less principals.
+
+`GEO_POSITION_PLANE` (default `shared`) pins this contract: setting it to
+`tenant` (or any other value) **fails closed at startup** because the
+position schema has no tenant support — a mis-scoped deployment must never
+silently fall back to the shared plane.
 
 ## Real-source setup
 
@@ -73,7 +98,8 @@ when absent), `GEO_PRODUCER_PRINCIPAL_ID`, `GEO_PRODUCER_PRINCIPAL_ROLE`,
 `GEO_OIDC_AUDIENCE`, `GEO_OIDC_JWKS_URL`) or `trusted_proxy`
 (`GEO_TRUSTED_PROXY_CIDRS`, `GEO_TRUSTED_PROXY_ID`).
 `GEO_DEDUP_WINDOW` (10s–30s, default 15s), `GEO_PUBLISH_AIS_RAW` (default
-true).
+true), `GEO_POSITION_PLANE` (default `shared`; anything else fails closed —
+see "Position plane scoping").
 
 ## Dev fixtures (synthetic, format-valid)
 
@@ -84,6 +110,65 @@ vessels (`SYNTH TRADER ONE` MMSI 657210300, `SYNTH FERRY TWO` 657221000,
 `SYNTH COASTER` 235081000). They are development data, never presented as
 live traffic. Replay them with `GEO_REPLAY_FILE=fixtures/nmea_replay.txt`;
 the replay connector **refuses to start when `APP_ENV=prod`**.
+
+## Realtime schedules: GTFS static + GTFS-RT (advisory §5)
+
+The transit registry (migration `0009_transit_registry.sql`) is the
+operator-maintained source of truth behind the feeds: `transit_agencies`,
+`transit_routes` (`route_type 4` ferry), `transit_stops` (jetties,
+fixed-point coordinates), `transit_calendars`, `transit_trips`,
+`transit_stop_times` (seconds after midnight, monotonic per trip enforced
+at the storage boundary), `transit_route_vessels` (route ↔ MMSI assignment
+windows) and `transit_alerts`. Every table is tenant-scoped with the 0007
+default-deny RLS posture.
+
+**Seeding.** NIWA/operators keep the registry as a reviewed YAML or JSON
+document and load it idempotently (upserts):
+
+    GEO_PG_DSN=... GEO_INGEST_PG_DSN=... \
+    go run ./cmd/geo-transitseed -tenant niwa -file registry.yaml
+
+Format: `fixtures/transit_seed.example.yaml` (micro-degree coordinates,
+second-after-midnight times, stop sequences assigned in document order).
+
+**Endpoints** (tenant-bound, standard read roles; positions embedded at the
+caller's clearance):
+
+- `GET /feeds/gtfs.zip` — deterministic spec-valid GTFS static archive
+  (agency/routes/stops/trips/stop_times/calendar), strong ETag + 304.
+- `GET /feeds/gtfs-rt/vehiclepositions.pb` — one entity per route-assigned
+  vessel with a FRESH position; MMSI = `vehicle.id`.
+- `GET /feeds/gtfs-rt/tripupdates.pb` — computed per-jetty ETAs.
+- `GET /feeds/gtfs-rt/alerts.pb` — active-window alerts.
+- `POST /v1/geo/transit/alerts` — admin create (`geo-transit-admin` /
+  `geo-admin`; auth required, maker/checker deliberately not required).
+
+**Fail-closed doctrine (never fabricate):**
+
+- Positions older than `GEO_GTFSRT_STALE_AFTER` (default 120s) → the
+  entity is OMITTED from the feed (`geo_gtfsrt_entities_omitted_total`
+  counted per reason), never interpolated or extrapolated.
+- ETAs are computed from reported positions/speeds only: remaining
+  along-route distance / rolling median of the last
+  `GEO_GTFSRT_SPEED_SAMPLES` (default 5) reported SOG values. Crew-entered
+  AIS ETA fields are never read.
+- A vessel with ZERO speed observations is predicted at the route default
+  speed and marked LOW CONFIDENCE (`schedule_relationship=SCHEDULED`,
+  300s per-stop uncertainty vs 60s live) — never passed off as live.
+- A vessel whose smoothed speed is below
+  `GEO_GTFSRT_ETA_MIN_SPEED_MILLIKNOTS` (default 1000 = 1 kn) produces NO
+  trip update (NO_SHOW-style omission, metric
+  `geo_gtfsrt_eta_omitted_total{reason="not_moving"}`): a docked or
+  drifting vessel's ETA is unknowable.
+- Vessels snapped further than `GEO_GTFSRT_SNAP_MAX_METERS` (default 200m)
+  off the route polyline get no stop attribution and no ETA.
+
+Route geometry v1 is the stop-to-stop polyline (no shapes.txt yet); trip
+matching is time-indexed against the service calendar (matching slacks
+15m/30m, code defaults in `internal/gtfsrt`). Feed builds are counted
+(`geo_feed_build_total`, `geo_feed_build_duration_ms_total`,
+`geo_gtfsrt_entities_emitted_total`, `geo_gtfsrt_eta_total{mode}`,
+`geo_gtfsrt_speed_samples_total`).
 
 ## Tests
 
@@ -105,7 +190,10 @@ go test ./integration/...
 
 They verify daily-partition routing, geofence ENTER/EXIT with signed
 envelopes, app-report/SOS idempotency (exact-replay absorb, conflict 409),
-SCD-2 static upsert and tenant RLS.
+SCD-2 static upsert (in-order rotation and out-of-order drop), tenant RLS
+(default-deny when unbound, explicit `geo_ingest` role for the evaluator)
+and the SOS lifecycle (gate 403, illegal transition 409, signed
+acknowledged/resolved envelopes).
 
 ## Docker / CI
 

@@ -1,0 +1,31 @@
+{
+  "modelCardVersion": "1.0",
+  "modelId": "port-congestion-baseline",
+  "modelVersion": "1.0.0",
+  "label": "seasonal-naive+holt-damped baseline v1.0.0",
+  "honestyStatement": "This is a statistical BASELINE model, not a machine-learned model. Every forecast response carries modelDisclaimer restating this. It must never be presented to users as an AI/ML prediction.",
+  "owner": "blueeconomy-geo-service (WP-10)",
+  "promotedTo": "blueeconomy-ml-stack registry (baseline tier)",
+  "algorithm": {
+    "summary": "Multiplicative seasonal decomposition (seasonal indices vs centred moving average) + damped Holt linear exponential smoothing (alpha=0.4, beta=0.1, phi=0.9) on the deseasonalized series; seasonal-naive fallback when fewer than 2 full seasons are recorded; non-seasonal naive fallback below that.",
+    "predictionIntervals": "80% and 95% Gaussian intervals from 1-step in-sample residual std, widened by sqrt(horizon)",
+    "failClosed": "INSUFFICIENT_HISTORY (HTTP 409) when fewer than 8 recorded observations exist; forecasts are never synthesized"
+  },
+  "trainingData": {
+    "source": "port_queue_observations (migration 0013) — queue-length projections of recorded eCallUp / gate events",
+    "window": "trailing 90 days, hourly steps",
+    "provenance": "every observation row carries port_code, source and observed_at; no synthetic rows"
+  },
+  "evaluation": {
+    "method": "expanding-origin 1-step backtest over the trailing 25% (max 48 points) of the recorded series, seasonal-naive reference",
+    "metrics": ["MAE", "MAPE"],
+    "reportedIn": "forecast response fields backtestMAE / backtestMAPE (per-request, computed on the actual recorded series)",
+    "unitTestThreshold": "MAPE < 15% on the recorded-shape seasonal fixture (internal/congestion/forecast_test.go)"
+  },
+  "limitations": [
+    "assumes queue dynamics are seasonal + slowly trending; cannot anticipate strikes, weather closures or berth breakdowns",
+    "prediction intervals assume Gaussian residuals",
+    "hourly step assumed; irregular observations are treated as equally spaced"
+  ],
+  "api": "GET /v1/geo/ports/{code}/congestion/forecast?horizonHours="
+}

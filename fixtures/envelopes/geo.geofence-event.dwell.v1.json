@@ -1,0 +1,37 @@
+{
+  "envelopeVersion": "1.0",
+  "eventId": "3d74e4fb-2c39-4359-92af-06fe1824fb87",
+  "eventType": "geo.geofence-event.v1",
+  "occurredAt": "2026-07-01T16:23:20Z",
+  "producer": "blueeconomy-geo-service",
+  "correlationId": "corr-wp10-dwell-0001",
+  "classification": "INTERNAL",
+  "fhir": {
+    "resourceType": "Bundle",
+    "type": "message",
+    "bundleId": "bdl-8653b5bb-c2c3-42d7-adca-20ed767e648e",
+    "entry": [
+      {
+        "fullUrl": "urn:uuid:8d57082a-b139-4029-a130-e7358e37b191",
+        "resource": {
+          "@type": "type.googleapis.com/blueeconomy.contracts.v1.GeofenceEventRecorded",
+          "classification": "INTERNAL",
+          "event": "DWELL",
+          "geofenceEventId": "gfe-wp10-dwell-0001",
+          "latitudeMicros": -4500000,
+          "longitudeMicros": 39500000,
+          "mmsi": "657210300",
+          "occurredAt": "2026-07-01T16:23:20Z",
+          "zoneId": "anchorage.kilindini",
+          "zoneName": "Kilindini Anchorage (sample)"
+        }
+      }
+    ]
+  },
+  "provenance": {
+    "principalId": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+    "principalRole": "geo-producer",
+    "ledgerCommitHash": "",
+    "signature": "eyJhbGciOiJFZERTQSIsImtpZCI6ImJsdWVlY29ub215LWdlby1zZXJ2aWNlLWZpeHR1cmVnZW4tMCJ9.eyJjbGFzc2lmaWNhdGlvbiI6IklOVEVSTkFMIiwiY29ycmVsYXRpb25JZCI6ImNvcnItd3AxMC1kd2VsbC0wMDAxIiwiZW52ZWxvcGVWZXJzaW9uIjoiMS4wIiwiZXZlbnRJZCI6IjNkNzRlNGZiLTJjMzktNDM1OS05MmFmLTA2ZmUxODI0ZmI4NyIsImV2ZW50VHlwZSI6Imdlby5nZW9mZW5jZS1ldmVudC52MSIsImZoaXIiOnsiYnVuZGxlSWQiOiJiZGwtODY1M2I1YmItYzJjMy00MmQ3LWFkY2EtMjBlZDc2N2U2NDhlIiwiZW50cnkiOlt7ImZ1bGxVcmwiOiJ1cm46dXVpZDo4ZDU3MDgyYS1iMTM5LTQwMjktYTEzMC1lNzM1OGUzN2IxOTEiLCJyZXNvdXJjZSI6eyJAdHlwZSI6InR5cGUuZ29vZ2xlYXBpcy5jb20vYmx1ZWVjb25vbXkuY29udHJhY3RzLnYxLkdlb2ZlbmNlRXZlbnRSZWNvcmRlZCIsImNsYXNzaWZpY2F0aW9uIjoiSU5URVJOQUwiLCJldmVudCI6IkRXRUxMIiwiZ2VvZmVuY2VFdmVudElkIjoiZ2ZlLXdwMTAtZHdlbGwtMDAwMSIsImxhdGl0dWRlTWljcm9zIjotNDUwMDAwMCwibG9uZ2l0dWRlTWljcm9zIjozOTUwMDAwMCwibW1zaSI6IjY1NzIxMDMwMCIsIm9jY3VycmVkQXQiOiIyMDI2LTA3LTAxVDE2OjIzOjIwWiIsInpvbmVJZCI6ImFuY2hvcmFnZS5raWxpbmRpbmkiLCJ6b25lTmFtZSI6IktpbGluZGluaSBBbmNob3JhZ2UgKHNhbXBsZSkifX1dLCJyZXNvdXJjZVR5cGUiOiJCdW5kbGUiLCJ0eXBlIjoibWVzc2FnZSJ9LCJvY2N1cnJlZEF0IjoiMjAyNi0wNy0wMVQxNjoyMzoyMFoiLCJwcm9kdWNlciI6ImJsdWVlY29ub215LWdlby1zZXJ2aWNlIiwicHJvdmVuYW5jZSI6eyJsZWRnZXJDb21taXRIYXNoIjoiIiwicHJpbmNpcGFsSWQiOiJmNDdhYzEwYi01OGNjLTQzNzItYTU2Ny0wZTAyYjJjM2Q0NzkiLCJwcmluY2lwYWxSb2xlIjoiZ2VvLXByb2R1Y2VyIn19.-FBCh8XBAyHk3-joPyM87dj4V_9BbWqFiLMPkGfbfyLcF6g-69vRSl5z2y-dUB-L_SO8n-yybZjJCKwbOdR8CQ"
+  }
+}
