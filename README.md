@@ -195,9 +195,56 @@ SCD-2 static upsert (in-order rotation and out-of-order drop), tenant RLS
 and the SOS lifecycle (gate 403, illegal transition 409, signed
 acknowledged/resolved envelopes).
 
+## MRV API (mrv-api)
+
+`cmd/mrv-api` is the Phase-8 MRV emissions boundary: the operator-facing
+intake/verification REST API (`/v1/mrv/*`) over the vessel identity and
+PostGIS activity plane, with a transactional outbox publisher draining
+signed envelope v1.0 events to the `mrv.voyages`, `mrv.verifications` and
+`mrv.soc` Kafka topics. It ships as the `mrv-api` target of the repo
+`Dockerfile` (`docker build --target mrv-api .`).
+
+Everything is env-gated and fails closed: missing DSN/brokers/address,
+missing signing key material, a malformed CII config or an invalid
+threshold aborts startup. Telemetry is a no-op unless
+`OTEL_EXPORTER_OTLP_ENDPOINT` is set.
+
+Required:
+
+| Env | Notes |
+| --- | --- |
+| `MRV_PG_DSN` | PostgreSQL/PostGIS DSN |
+| `MRV_KAFKA_BROKERS` | Comma-separated broker list for the mrv.* outbox publisher |
+| `MRV_API_ADDR` | Listen address, e.g. `:8082` |
+| `MRV_PRODUCER_PRINCIPAL_ID` | Envelope provenance principal |
+| `ENVELOPE_SIGNING_PRIVATE_KEY` + `ENVELOPE_SIGNING_KEY_EPOCH` | Shared envelope signing surface (fail-closed when absent); kid `<producer>-<epoch>` |
+
+Optional (defaults shown; all fail-closed on malformed values):
+
+| Env | Default | Notes |
+| --- | --- | --- |
+| `MRV_PRODUCER_PRINCIPAL_ROLE` | `mrv-producer` | Envelope provenance role |
+| `MRV_RUN_MIGRATIONS` | `true` | Set `false` to skip migrations at boot |
+| `MRV_CII_CONFIG_PATH` | unset | Operator-approved, source-cited CII config document; when absent every CII outcome is honestly `NOT_COMPUTABLE` (never estimated) |
+| `MRV_DEADLINE_REPORT_MM_DD` | `03-31` | Annual report submission deadline (advisory) |
+| `MRV_DEADLINE_SOC_MM_DD` | `05-31` | SoC issuance deadline (advisory) |
+| `MRV_DEADLINE_GISIS_MM_DD` | `06-30` | GISIS forwarding deadline (advisory) |
+| `MRV_AIS_SOG_THRESHOLD_MILLIKNOTS` | methodology default | AIS activity-estimation SOG threshold |
+| `MRV_AIS_SEGMENT_GAP_MINUTES` | methodology default | AIS segment gap split |
+| `MRV_AIS_MIN_COVERAGE_PERMILLE` | methodology default | Minimum AIS coverage before estimation |
+| `MRV_AIS_CROSSCHECK_TOLERANCE_PERMILLE` | `100` | AIS cross-check tolerance |
+| `MRV_DCS_GT_THRESHOLD` | `5000` | IMO DCS gross-tonnage threshold |
+| `MRV_OUTBOX_POLL_INTERVAL` | `2s` | Outbox drain interval |
+| `MRV_AUTH_MODE` | `oidc` | `oidc` or `trusted_proxy` |
+| `MRV_OIDC_JWKS_URL` / `MRV_OIDC_ISSUER` / `MRV_OIDC_AUDIENCE` / `MRV_OIDC_CA_FILE` | — | OIDC (Keycloak) verification |
+| `MRV_TRUSTED_PROXY_CIDRS` / `MRV_TRUSTED_PROXY_ID` | — | Trusted edge-proxy identity mode |
+
 ## Docker / CI
 
-`Dockerfile` builds a distroless static non-root image (fleet convention).
+`Dockerfile` builds both service binaries in one build stage and exposes
+two distroless static non-root runtime targets (fleet convention):
+`geo-service` (default/final stage) and `mrv-api`
+(`docker build --target mrv-api .`).
 CI pipeline definition lives at `ci/github-actions.yml.example` and must be
 moved to `.github/workflows/` once a workflow-scoped token is available.
 
