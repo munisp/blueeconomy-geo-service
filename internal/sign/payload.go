@@ -139,3 +139,49 @@ type SosAlertResolved struct {
 	Note            string    `json:"note,omitempty"`
 	Classification  string    `json:"classification"`
 }
+
+// TrackPointPayload is one recorded position inside a track window (WP-10).
+type TrackPointPayload struct {
+	LatitudeMicros   int32     `json:"latitudeMicros"`
+	LongitudeMicros  int32     `json:"longitudeMicros"`
+	SogMilliknots    int32     `json:"speedOverGroundMilliknots"`
+	ObservedAt       time.Time `json:"observedAt"`
+}
+
+// TrackGapPayload is a reported (never filled) track gap (WP-10).
+type TrackGapPayload struct {
+	Start             time.Time `json:"start"`
+	End               time.Time `json:"end"`
+	DurationSeconds   int64     `json:"durationSeconds"`
+	FromLatitudeMicros  int32   `json:"fromLatitudeMicros"`
+	FromLongitudeMicros int32   `json:"fromLongitudeMicros"`
+	ToLatitudeMicros    int32   `json:"toLatitudeMicros"`
+	ToLongitudeMicros   int32   `json:"toLongitudeMicros"`
+}
+
+// VesselTrackWindow is the geo.track-window.v1 payload (WP-10): recorded
+// positions only — no synthesized or interpolated points.
+type VesselTrackWindow struct {
+	MMSI           string             `json:"mmsi"`
+	WindowStart    time.Time          `json:"windowStart"`
+	WindowEnd      time.Time          `json:"windowEnd"`
+	Points         []TrackPointPayload `json:"points"`
+	Gaps           []TrackGapPayload   `json:"gaps"`
+	MaxGapSeconds  int64              `json:"maxGapSeconds"`
+	Classification string             `json:"classification"`
+}
+
+// PortApproachEtaPayload is the geo.port-approach-eta.v1 payload (WP-10):
+// the honest distance/recorded-speed ETA heuristic. EtaSeconds is negative
+// when no honest estimate exists.
+type PortApproachEtaPayload struct {
+	MMSI               string    `json:"mmsi"`
+	PortCode           string    `json:"portCode"`
+	DistanceMeters     float64   `json:"distanceMeters"`
+	EtaSeconds         int64     `json:"etaSeconds"`
+	SpeedKnots         float64   `json:"speedKnots"`
+	Confidence         string    `json:"confidence"`
+	Explanation        string    `json:"explanation"`
+	PositionObservedAt time.Time `json:"positionObservedAt"`
+	Classification     string    `json:"classification"`
+}

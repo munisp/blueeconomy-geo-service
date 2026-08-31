@@ -1,0 +1,64 @@
+{
+  "envelopeVersion": "1.0",
+  "eventId": "b1da43f3-0589-489d-a0a7-7ed984198471",
+  "eventType": "geo.track-window.v1",
+  "occurredAt": "2026-07-01T17:13:20Z",
+  "producer": "blueeconomy-geo-service",
+  "correlationId": "corr-wp10-track-0001",
+  "classification": "INTERNAL",
+  "fhir": {
+    "resourceType": "Bundle",
+    "type": "message",
+    "bundleId": "bdl-7320f634-25d6-486a-9561-979affb43236",
+    "entry": [
+      {
+        "fullUrl": "urn:uuid:4e4187e0-4a55-43f5-8a21-e244c8871c29",
+        "resource": {
+          "@type": "type.googleapis.com/blueeconomy.contracts.v1.VesselTrackWindow",
+          "classification": "INTERNAL",
+          "gaps": [
+            {
+              "start": "2026-07-01T15:23:20Z",
+              "end": "2026-07-01T16:48:20Z",
+              "durationSeconds": 5100,
+              "fromLatitudeMicros": 6401200,
+              "fromLongitudeMicros": 3410500,
+              "toLatitudeMicros": 6412800,
+              "toLongitudeMicros": 3429900
+            }
+          ],
+          "maxGapSeconds": 1800,
+          "mmsi": "657210300",
+          "points": [
+            {
+              "latitudeMicros": 6395500,
+              "longitudeMicros": 3398800,
+              "speedOverGroundMilliknots": 12400,
+              "observedAt": "2026-07-01T15:13:20Z"
+            },
+            {
+              "latitudeMicros": 6401200,
+              "longitudeMicros": 3410500,
+              "speedOverGroundMilliknots": 12100,
+              "observedAt": "2026-07-01T15:23:20Z"
+            },
+            {
+              "latitudeMicros": 6412800,
+              "longitudeMicros": 3429900,
+              "speedOverGroundMilliknots": 11800,
+              "observedAt": "2026-07-01T16:48:20Z"
+            }
+          ],
+          "windowEnd": "2026-07-01T17:13:20Z",
+          "windowStart": "2026-07-01T15:13:20Z"
+        }
+      }
+    ]
+  },
+  "provenance": {
+    "principalId": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+    "principalRole": "geo-producer",
+    "ledgerCommitHash": "",
+    "signature": "eyJhbGciOiJFZERTQSIsImtpZCI6ImJsdWVlY29ub215LWdlby1zZXJ2aWNlLWZpeHR1cmVnZW4tMCJ9.eyJjbGFzc2lmaWNhdGlvbiI6IklOVEVSTkFMIiwiY29ycmVsYXRpb25JZCI6ImNvcnItd3AxMC10cmFjay0wMDAxIiwiZW52ZWxvcGVWZXJzaW9uIjoiMS4wIiwiZXZlbnRJZCI6ImIxZGE0M2YzLTA1ODktNDg5ZC1hMGE3LTdlZDk4NDE5ODQ3MSIsImV2ZW50VHlwZSI6Imdlby50cmFjay13aW5kb3cudjEiLCJmaGlyIjp7ImJ1bmRsZUlkIjoiYmRsLTczMjBmNjM0LTI1ZDYtNDg2YS05NTYxLTk3OWFmZmI0MzIzNiIsImVudHJ5IjpbeyJmdWxsVXJsIjoidXJuOnV1aWQ6NGU0MTg3ZTAtNGE1NS00M2Y1LThhMjEtZTI0NGM4ODcxYzI5IiwicmVzb3VyY2UiOnsiQHR5cGUiOiJ0eXBlLmdvb2dsZWFwaXMuY29tL2JsdWVlY29ub215LmNvbnRyYWN0cy52MS5WZXNzZWxUcmFja1dpbmRvdyIsImNsYXNzaWZpY2F0aW9uIjoiSU5URVJOQUwiLCJnYXBzIjpbeyJkdXJhdGlvblNlY29uZHMiOjUxMDAsImVuZCI6IjIwMjYtMDctMDFUMTY6NDg6MjBaIiwiZnJvbUxhdGl0dWRlTWljcm9zIjo2NDAxMjAwLCJmcm9tTG9uZ2l0dWRlTWljcm9zIjozNDEwNTAwLCJzdGFydCI6IjIwMjYtMDctMDFUMTU6MjM6MjBaIiwidG9MYXRpdHVkZU1pY3JvcyI6NjQxMjgwMCwidG9Mb25naXR1ZGVNaWNyb3MiOjM0Mjk5MDB9XSwibWF4R2FwU2Vjb25kcyI6MTgwMCwibW1zaSI6IjY1NzIxMDMwMCIsInBvaW50cyI6W3sibGF0aXR1ZGVNaWNyb3MiOjYzOTU1MDAsImxvbmdpdHVkZU1pY3JvcyI6MzM5ODgwMCwib2JzZXJ2ZWRBdCI6IjIwMjYtMDctMDFUMTU6MTM6MjBaIiwic3BlZWRPdmVyR3JvdW5kTWlsbGlrbm90cyI6MTI0MDB9LHsibGF0aXR1ZGVNaWNyb3MiOjY0MDEyMDAsImxvbmdpdHVkZU1pY3JvcyI6MzQxMDUwMCwib2JzZXJ2ZWRBdCI6IjIwMjYtMDctMDFUMTU6MjM6MjBaIiwic3BlZWRPdmVyR3JvdW5kTWlsbGlrbm90cyI6MTIxMDB9LHsibGF0aXR1ZGVNaWNyb3MiOjY0MTI4MDAsImxvbmdpdHVkZU1pY3JvcyI6MzQyOTkwMCwib2JzZXJ2ZWRBdCI6IjIwMjYtMDctMDFUMTY6NDg6MjBaIiwic3BlZWRPdmVyR3JvdW5kTWlsbGlrbm90cyI6MTE4MDB9XSwid2luZG93RW5kIjoiMjAyNi0wNy0wMVQxNzoxMzoyMFoiLCJ3aW5kb3dTdGFydCI6IjIwMjYtMDctMDFUMTU6MTM6MjBaIn19XSwicmVzb3VyY2VUeXBlIjoiQnVuZGxlIiwidHlwZSI6Im1lc3NhZ2UifSwib2NjdXJyZWRBdCI6IjIwMjYtMDctMDFUMTc6MTM6MjBaIiwicHJvZHVjZXIiOiJibHVlZWNvbm9teS1nZW8tc2VydmljZSIsInByb3ZlbmFuY2UiOnsibGVkZ2VyQ29tbWl0SGFzaCI6IiIsInByaW5jaXBhbElkIjoiZjQ3YWMxMGItNThjYy00MzcyLWE1NjctMGUwMmIyYzNkNDc5IiwicHJpbmNpcGFsUm9sZSI6Imdlby1wcm9kdWNlciJ9fQ.Y3JPe0uyHEk3Lj9a2X1JL-f6UuIAW3P52K4zDrpqHibVBtf9oIhwdyuK5q4igK8gxCtr7O5kRF2POcyA0JtnAA"
+  }
+}

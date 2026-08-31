@@ -32,6 +32,9 @@ const (
 	// ledger transitions (RESTRICTED floor, same as the alert).
 	EventSOSAcknowledged = "geo.sos-acknowledged.v1"
 	EventSOSResolved     = "geo.sos-resolved.v1"
+	// WP-10 track analytics resources (blueeconomy-contracts geo.proto).
+	EventTrackWindow     = "geo.track-window.v1"
+	EventPortApproachEta = "geo.port-approach-eta.v1"
 
 	// typeURLPrefix names the proto package for the FHIR Any projection.
 	typeURLPrefix = "type.googleapis.com/blueeconomy.contracts.v1."
@@ -48,6 +51,8 @@ var eventResourceType = map[string]string{
 	EventSOS:               "SosAlertRaised",
 	EventSOSAcknowledged:   "SosAlertAcknowledged",
 	EventSOSResolved:       "SosAlertResolved",
+	EventTrackWindow:       "VesselTrackWindow",
+	EventPortApproachEta:   "PortApproachEta",
 }
 
 // sosEventTypes marks the event family carrying the RESTRICTED floor.

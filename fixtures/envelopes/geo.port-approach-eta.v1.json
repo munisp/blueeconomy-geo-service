@@ -1,0 +1,37 @@
+{
+  "envelopeVersion": "1.0",
+  "eventId": "2c8fc881-167f-429c-a85b-2b31e3ce9834",
+  "eventType": "geo.port-approach-eta.v1",
+  "occurredAt": "2026-07-01T16:49:20Z",
+  "producer": "blueeconomy-geo-service",
+  "correlationId": "corr-wp10-eta-0001",
+  "classification": "INTERNAL",
+  "fhir": {
+    "resourceType": "Bundle",
+    "type": "message",
+    "bundleId": "bdl-dd1c3082-fc53-43a3-a949-c58b065c13d9",
+    "entry": [
+      {
+        "fullUrl": "urn:uuid:da3b034c-224a-4cb5-8c8c-62a9208f15bb",
+        "resource": {
+          "@type": "type.googleapis.com/blueeconomy.contracts.v1.PortApproachEta",
+          "classification": "INTERNAL",
+          "confidence": "HIGH",
+          "distanceMeters": 18522,
+          "etaSeconds": 3600,
+          "explanation": "distance/recorded-speed heuristic; assumes constant course and speed",
+          "mmsi": "657210300",
+          "portCode": "KEMBA",
+          "positionObservedAt": "2026-07-01T16:48:20Z",
+          "speedKnots": 10
+        }
+      }
+    ]
+  },
+  "provenance": {
+    "principalId": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+    "principalRole": "geo-producer",
+    "ledgerCommitHash": "",
+    "signature": "eyJhbGciOiJFZERTQSIsImtpZCI6ImJsdWVlY29ub215LWdlby1zZXJ2aWNlLWZpeHR1cmVnZW4tMCJ9.eyJjbGFzc2lmaWNhdGlvbiI6IklOVEVSTkFMIiwiY29ycmVsYXRpb25JZCI6ImNvcnItd3AxMC1ldGEtMDAwMSIsImVudmVsb3BlVmVyc2lvbiI6IjEuMCIsImV2ZW50SWQiOiIyYzhmYzg4MS0xNjdmLTQyOWMtYTg1Yi0yYjMxZTNjZTk4MzQiLCJldmVudFR5cGUiOiJnZW8ucG9ydC1hcHByb2FjaC1ldGEudjEiLCJmaGlyIjp7ImJ1bmRsZUlkIjoiYmRsLWRkMWMzMDgyLWZjNTMtNDNhMy1hOTQ5LWM1OGIwNjVjMTNkOSIsImVudHJ5IjpbeyJmdWxsVXJsIjoidXJuOnV1aWQ6ZGEzYjAzNGMtMjI0YS00Y2I1LThjOGMtNjJhOTIwOGYxNWJiIiwicmVzb3VyY2UiOnsiQHR5cGUiOiJ0eXBlLmdvb2dsZWFwaXMuY29tL2JsdWVlY29ub215LmNvbnRyYWN0cy52MS5Qb3J0QXBwcm9hY2hFdGEiLCJjbGFzc2lmaWNhdGlvbiI6IklOVEVSTkFMIiwiY29uZmlkZW5jZSI6IkhJR0giLCJkaXN0YW5jZU1ldGVycyI6MTg1MjIsImV0YVNlY29uZHMiOjM2MDAsImV4cGxhbmF0aW9uIjoiZGlzdGFuY2UvcmVjb3JkZWQtc3BlZWQgaGV1cmlzdGljOyBhc3N1bWVzIGNvbnN0YW50IGNvdXJzZSBhbmQgc3BlZWQiLCJtbXNpIjoiNjU3MjEwMzAwIiwicG9ydENvZGUiOiJLRU1CQSIsInBvc2l0aW9uT2JzZXJ2ZWRBdCI6IjIwMjYtMDctMDFUMTY6NDg6MjBaIiwic3BlZWRLbm90cyI6MTB9fV0sInJlc291cmNlVHlwZSI6IkJ1bmRsZSIsInR5cGUiOiJtZXNzYWdlIn0sIm9jY3VycmVkQXQiOiIyMDI2LTA3LTAxVDE2OjQ5OjIwWiIsInByb2R1Y2VyIjoiYmx1ZWVjb25vbXktZ2VvLXNlcnZpY2UiLCJwcm92ZW5hbmNlIjp7ImxlZGdlckNvbW1pdEhhc2giOiIiLCJwcmluY2lwYWxJZCI6ImY0N2FjMTBiLTU4Y2MtNDM3Mi1hNTY3LTBlMDJiMmMzZDQ3OSIsInByaW5jaXBhbFJvbGUiOiJnZW8tcHJvZHVjZXIifX0.La8LLX6wyhQtJkFXUKtHgs_2qS2zJIin78RXKAMaIVjEMkmp7ybDrD8ItSL5ZYgW-J1NDxlhWjNiInZNilg1CQ"
+  }
+}
