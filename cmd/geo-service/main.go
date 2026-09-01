@@ -225,6 +225,16 @@ func run(logger *log.Logger) error {
 		}
 		geoV2.FenceEvents = pipeline
 		server.GeoV2 = geoV2
+		// Phase-12 safety-compliance surface: FSC/PSC inspections, SAR
+		// coordination, marine accident investigation. Lifecycle envelopes
+		// publish through the same signed pipeline (fail-closed 503 when
+		// unwired).
+		safety, err := api.NewSafety(storage)
+		if err != nil {
+			return err
+		}
+		safety.Events = pipeline
+		server.Safety = safety
 		// GTFS static + GTFS-RT feeds (advisory §5): the AIS→GTFS-RT
 		// adapter, staleness-gated and fail-closed.
 		feedBuilder, err := gtfsrt.NewBuilder(storage, registry, gtfsrt.Config{

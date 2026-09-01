@@ -52,6 +52,10 @@ type Server struct {
 	// GeoV2 wires the WP-10 surface (versioned geofences, track APIs,
 	// congestion forecast). When nil the v2 routes are not registered.
 	GeoV2 *GeoV2
+	// Safety wires the Phase-12 safety-compliance surface (FSC/PSC
+	// inspections, SAR coordination, marine accident investigation). When
+	// nil the safety routes are not registered.
+	Safety *Safety
 }
 
 // NewServer validates the wiring fail-closed.
@@ -99,6 +103,9 @@ func (server *Server) Handler(authenticator auth.Authenticator, appReportRoutes 
 	}
 	if server.GeoV2 != nil {
 		server.registerGeoV2Routes(mux)
+	}
+	if server.Safety != nil {
+		server.registerSafetyRoutes(mux)
 	}
 	mux.HandleFunc("GET /healthz", func(writer http.ResponseWriter, _ *http.Request) {
 		writer.Header().Set("Content-Type", "application/json")

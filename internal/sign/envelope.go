@@ -35,6 +35,11 @@ const (
 	// WP-10 track analytics resources (blueeconomy-contracts geo.proto).
 	EventTrackWindow     = "geo.track-window.v1"
 	EventPortApproachEta = "geo.port-approach-eta.v1"
+	// Phase-12 safety-compliance lifecycle events (RESTRICTED floor, same
+	// as the SOS family they extend).
+	EventSafetyInspection    = "safety.inspection.v1"
+	EventSafetySAR           = "safety.sar.v1"
+	EventSafetyInvestigation = "safety.investigation.v1"
 
 	// typeURLPrefix names the proto package for the FHIR Any projection.
 	typeURLPrefix = "type.googleapis.com/blueeconomy.contracts.v1."
@@ -53,6 +58,9 @@ var eventResourceType = map[string]string{
 	EventSOSResolved:       "SosAlertResolved",
 	EventTrackWindow:       "VesselTrackWindow",
 	EventPortApproachEta:   "PortApproachEta",
+	EventSafetyInspection:    "SafetyInspectionLifecycle",
+	EventSafetySAR:           "SafetySarLifecycle",
+	EventSafetyInvestigation: "SafetyInvestigationLifecycle",
 }
 
 // sosEventTypes marks the event family carrying the RESTRICTED floor.
@@ -60,6 +68,9 @@ var sosEventTypes = map[string]bool{
 	EventSOS:             true,
 	EventSOSAcknowledged: true,
 	EventSOSResolved:     true,
+	EventSafetyInspection:    true,
+	EventSafetySAR:           true,
+	EventSafetyInvestigation: true,
 }
 
 // Provenance binds an event to the acting principal and the integrity chain.

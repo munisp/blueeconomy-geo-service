@@ -185,3 +185,49 @@ type PortApproachEtaPayload struct {
 	PositionObservedAt time.Time `json:"positionObservedAt"`
 	Classification     string    `json:"classification"`
 }
+
+// SafetyInspectionLifecycle is the safety.inspection.v1 payload: one FSC/PSC
+// inspection lifecycle transition (including the detention workflow).
+// Classification floor: RESTRICTED.
+type SafetyInspectionLifecycle struct {
+	InspectionID    string    `json:"inspectionId"`
+	Regime          string    `json:"regime"`
+	VesselReference string    `json:"vesselReference"`
+	PortCode        string    `json:"portCode"`
+	Action          string    `json:"action"`
+	State           string    `json:"state"`
+	Actor           string    `json:"actor"`
+	OccurredAt      time.Time `json:"occurredAt"`
+	Note            string    `json:"note,omitempty"`
+	Classification  string    `json:"classification"`
+}
+
+// SafetySarLifecycle is the safety.sar.v1 payload: one SAR incident phase
+// transition, resource tasking event or comms-log reference. Classification
+// floor: RESTRICTED.
+type SafetySarLifecycle struct {
+	IncidentID     string    `json:"incidentId"`
+	SosAlertID     string    `json:"sosAlertId,omitempty"`
+	Action         string    `json:"action"`
+	Phase          string    `json:"phase"`
+	Actor          string    `json:"actor"`
+	OccurredAt     time.Time `json:"occurredAt"`
+	ResourceName   string    `json:"resourceName,omitempty"`
+	Note           string    `json:"note,omitempty"`
+	Classification string    `json:"classification"`
+}
+
+// SafetyInvestigationLifecycle is the safety.investigation.v1 payload: one
+// investigation case state transition or evidence-chain commitment.
+// Classification floor: RESTRICTED.
+type SafetyInvestigationLifecycle struct {
+	CaseID         string    `json:"caseId"`
+	CasualtyType   string    `json:"casualtyType"`
+	Action         string    `json:"action"`
+	State          string    `json:"state"`
+	Actor          string    `json:"actor"`
+	OccurredAt     time.Time `json:"occurredAt"`
+	EvidenceID     string    `json:"evidenceId,omitempty"`
+	ChainHash      string    `json:"chainHash,omitempty"`
+	Classification string    `json:"classification"`
+}

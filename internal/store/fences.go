@@ -223,40 +223,51 @@ func microsText(v int32) string {
 // InsertGeofenceEvent persists one transition with its envelope digest.
 // Events with an empty digest are stored but hidden from reads (unprovenanced).
 func (store *Store) InsertGeofenceEvent(ctx context.Context, ev FenceEventRow) error {
-	_, err := store.pool.Exec(ctx, `INSERT INTO geofence_events
-		(event_id, geofence_id, geofence_version, tenant_id, event_type, mmsi,
-		 latitude_micros, longitude_micros, classification, envelope_digest, occurred_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
-		ev.EventID, ev.GeofenceID, ev.GeofenceVersion, ev.TenantID, ev.EventType, ev.MMSI,
-		ev.LatitudeMicros, ev.LongitudeMicros, ev.Classification, ev.EnvelopeDigest, ev.OccurredAt)
-	if err != nil {
-		return fmt.Errorf("insert geofence event: %w", err)
+	if strings.TrimSpace(ev.TenantID) == "" {
+		return errors.New("geofence transition event tenant id is required")
 	}
-	return nil
+	return store.WithTenant(ctx, ev.TenantID, func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `INSERT INTO geofence_transition_events
+			(event_id, geofence_id, geofence_version, tenant_id, event_type, mmsi,
+			 latitude_micros, longitude_micros, classification, envelope_digest, occurred_at)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+			ev.EventID, ev.GeofenceID, ev.GeofenceVersion, ev.TenantID, ev.EventType, ev.MMSI,
+			ev.LatitudeMicros, ev.LongitudeMicros, ev.Classification, ev.EnvelopeDigest, ev.OccurredAt)
+		if err != nil {
+			return fmt.Errorf("insert geofence event: %w", err)
+		}
+		return nil
+	})
 }
 
 // ListGeofenceEvents returns provenanced (digest-bearing) events, newest
 // first. Unprovenanced rows (empty digest) are never served.
 func (store *Store) ListGeofenceEvents(ctx context.Context, tenantID, geofenceID string, clearedLabels []string, limit int) ([]FenceEventRow, error) {
-	rows, err := store.pool.Query(ctx, `SELECT event_id, geofence_id, geofence_version, event_type, mmsi,
-		latitude_micros, longitude_micros, classification, envelope_digest, occurred_at
-		FROM geofence_events
-		WHERE tenant_id = $1 AND geofence_id = $2 AND classification = ANY($3) AND envelope_digest <> ''
-		ORDER BY occurred_at DESC LIMIT $4`, tenantID, geofenceID, clearedLabels, limit)
+	out := []FenceEventRow{}
+	err := store.WithTenant(ctx, tenantID, func(tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, `SELECT event_id, geofence_id, geofence_version, event_type, mmsi,
+			latitude_micros, longitude_micros, classification, envelope_digest, occurred_at
+			FROM geofence_transition_events
+			WHERE tenant_id = $1 AND geofence_id = $2 AND classification = ANY($3) AND envelope_digest <> ''
+			ORDER BY occurred_at DESC LIMIT $4`, tenantID, geofenceID, clearedLabels, limit)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var r FenceEventRow
+			if err := rows.Scan(&r.EventID, &r.GeofenceID, &r.GeofenceVersion, &r.EventType, &r.MMSI,
+				&r.LatitudeMicros, &r.LongitudeMicros, &r.Classification, &r.EnvelopeDigest, &r.OccurredAt); err != nil {
+				return fmt.Errorf("scan geofence event: %w", err)
+			}
+			out = append(out, r)
+		}
+		return rows.Err()
+	})
 	if err != nil {
 		return nil, fmt.Errorf("list geofence events: %w", err)
 	}
-	defer rows.Close()
-	out := []FenceEventRow{}
-	for rows.Next() {
-		var r FenceEventRow
-		if err := rows.Scan(&r.EventID, &r.GeofenceID, &r.GeofenceVersion, &r.EventType, &r.MMSI,
-			&r.LatitudeMicros, &r.LongitudeMicros, &r.Classification, &r.EnvelopeDigest, &r.OccurredAt); err != nil {
-			return nil, fmt.Errorf("scan geofence event: %w", err)
-		}
-		out = append(out, r)
-	}
-	return out, rows.Err()
+	return out, nil
 }
 
 // QueryTrack returns the time-windowed recorded track for one vessel,
