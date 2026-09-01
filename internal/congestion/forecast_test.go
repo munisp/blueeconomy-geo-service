@@ -94,17 +94,62 @@ func TestSeasonalIndicesNormalized(t *testing.T) {
 }
 
 func TestBacktestPerfectSeasonal(t *testing.T) {
-	// Perfectly periodic series: seasonal-naive backtest error must be ~0.
-	y := make([]Observation, 96)
-	for i := range y {
-		v := 5 + 3*math.Sin(2*math.Pi*float64(i%24)/24)
-		y[i] = Observation{ObservedAtUnix: int64(i) * 3600, QueueLength: v}
+	// Perfectly periodic series: both the fitted model and the
+	// seasonal-naive reference must score ~0 error.
+	series := make([]float64, 96)
+	for i := range series {
+		series[i] = 5 + 3*math.Sin(2*math.Pi*float64(i%24)/24)
 	}
-	series := make([]float64, len(y))
-	for i, o := range y {
-		series[i] = o.QueueLength
+	scores := backtest(series, 24)
+	require.InDelta(t, 0.0, scores.naiveMAE, 1e-9)
+	require.InDelta(t, 0.0, scores.naiveMAPE, 1e-9)
+	require.InDelta(t, 0.0, scores.modelMAE, 1e-6)
+	require.InDelta(t, 0.0, scores.modelMAPE, 1e-6)
+}
+
+func TestBacktestScoresFittedModelNotNaive(t *testing.T) {
+	// Seasonal cycle (period 24) PLUS a trend: the seasonal-naive
+	// reference misses the trend accumulated over a full season at every
+	// origin, while the fitted seasonal-indices + damped-Holt model
+	// tracks both. The reported model backtest MUST reflect the fitted
+	// model (clearly better than naive here), not the naive reference
+	// it used to measure.
+	series := make([]float64, 24*14)
+	for i := range series {
+		series[i] = 6 + 4*math.Sin(2*math.Pi*float64(i%24)/24) + 8 + 0.1*float64(i)
 	}
-	mae, mape := backtest(series, 24)
-	require.InDelta(t, 0.0, mae, 1e-9)
-	require.InDelta(t, 0.0, mape, 1e-9)
+	scores := backtest(series, 24)
+	require.InDelta(t, 2.4, scores.naiveMAE, 0.05,
+		"seasonal-naive error on this fixture is exactly one season of trend (24 x 0.1)")
+	require.Less(t, scores.modelMAE, 0.5*scores.naiveMAE,
+		"fitted-model backtest must score the fitted model, which clearly beats naive on a seasonal+trend series")
+	require.Less(t, scores.modelMAPE, scores.naiveMAPE)
+}
+
+func TestForecastBacktestReportsModelAndBaseline(t *testing.T) {
+	// Seasonal series with a trend: the API must report BOTH the fitted
+	// model accuracy and the naive baseline, and the fitted model must be
+	// at least as good as the baseline it replaces.
+	obs := recordedFixture(24*14, 24)
+	fc, err := ForecastSeries("KEMBA", obs, 3600, 24, 24)
+	require.NoError(t, err)
+	require.Greater(t, fc.BacktestNaiveMAE, 0.0, "naive baseline must be reported for comparison")
+	require.LessOrEqual(t, fc.BacktestMAE, fc.BacktestNaiveMAE,
+		"fitted Holt+seasonal model must not lose to the naive reference on a clean seasonal+trend series")
+	require.LessOrEqual(t, fc.BacktestMAPE, fc.BacktestNaiveMAPE)
+}
+
+func TestPredictOneStepMatchesServedModel(t *testing.T) {
+	// The backtest's per-origin refit must be the SAME model the API
+	// serves: a 1-step predictOneStep on the full training history must
+	// reproduce the first point of the served forecast.
+	obs := recordedFixture(24*14, 24)
+	y := make([]float64, len(obs))
+	for i, o := range obs {
+		y[i] = o.QueueLength
+	}
+	fc, err := ForecastSeries("KEMBA", obs, 3600, 24, 24)
+	require.NoError(t, err)
+	require.InDelta(t, fc.Points[0].QueueLength, predictOneStep(y, 24, len(y)), 1e-9,
+		"backtest refit must be identical to the served model pipeline")
 }
