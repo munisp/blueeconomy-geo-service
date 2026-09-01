@@ -96,7 +96,14 @@ func run(logger *log.Logger) error {
 		return err
 	}
 
-	pool, err := pgxpool.New(ctx, dsn)
+	poolConfig, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		return fmt.Errorf("parse postgres DSN: %w", err)
+	}
+	if err := store.ApplyPoolEnv(poolConfig); err != nil {
+		return err
+	}
+	pool, err := pgxpool.NewWithConfig(ctx, poolConfig)
 	if err != nil {
 		return fmt.Errorf("connect postgres: %w", err)
 	}

@@ -46,6 +46,9 @@ func NewStore(ctx context.Context, app *store.Store, devicesDSN string) (*Store,
 	}
 	// otelpgx query tracer (no-op when telemetry is disabled).
 	config.ConnConfig.Tracer = otelpgx.NewTracer()
+	if err := store.ApplyPoolEnv(config); err != nil {
+		return nil, fmt.Errorf("devices: %w", err)
+	}
 	pool, err := pgxpool.NewWithConfig(ctx, config)
 	if err != nil {
 		return nil, fmt.Errorf("devices: connect device-plane postgres: %w", err)
