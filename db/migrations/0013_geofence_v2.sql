@@ -31,7 +31,7 @@ CREATE TABLE geofences (
 CREATE UNIQUE INDEX geofences_one_active ON geofences (geofence_id) WHERE state = 'ACTIVE';
 CREATE INDEX geofences_geom_gist ON geofences USING GIST (geom) WHERE state = 'ACTIVE';
 
-CREATE TABLE geofence_events (
+CREATE TABLE geofence_transition_events (
     event_id TEXT NOT NULL PRIMARY KEY CHECK (event_id ~ '^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$'),
     geofence_id TEXT NOT NULL,
     geofence_version INTEGER NOT NULL,
@@ -49,8 +49,17 @@ CREATE TABLE geofence_events (
     recorded_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     FOREIGN KEY (geofence_id, geofence_version) REFERENCES geofences (geofence_id, version)
 );
-CREATE INDEX geofence_events_vessel_time ON geofence_events (mmsi, occurred_at DESC);
-CREATE INDEX geofence_events_fence_time ON geofence_events (geofence_id, occurred_at DESC);
+CREATE INDEX geofence_transition_events_vessel_time ON geofence_transition_events (mmsi, occurred_at DESC);
+CREATE INDEX geofence_transition_events_fence_time ON geofence_transition_events (geofence_id, occurred_at DESC);
+
+-- Tenant RLS (0014 doctrine): default deny on unbound sessions; writers
+-- bind app.tenant_id per transaction.
+ALTER TABLE geofence_transition_events ENABLE ROW LEVEL SECURITY;
+ALTER TABLE geofence_transition_events FORCE ROW LEVEL SECURITY;
+CREATE POLICY geofence_transition_events_tenant_policy ON geofence_transition_events
+    USING (tenant_id = current_setting('app.tenant_id', true))
+    WITH CHECK (tenant_id = current_setting('app.tenant_id', true));
+GRANT SELECT, INSERT ON geofence_transition_events TO geo;
 
 -- Port queue-length observations (from eCallUp / gate events). This is the
 -- recorded history the congestion baseline forecaster trains on. Fail-closed:

@@ -10,6 +10,8 @@ package integration
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"net/url"
 	"os"
 	"testing"
 	"time"
@@ -26,7 +28,33 @@ func wp10Pool(t *testing.T) *pgxpool.Pool {
 	if dsn == "" {
 		t.Skip("GEO_TEST_PG_DSN not set: PostGIS integration tests require docker-compose.integration.yml")
 	}
-	pool, err := pgxpool.New(context.Background(), dsn)
+	// Provision a FRESH database per run (the test applies 0013 standalone,
+	// outside schema_migrations — sharing a database with the full-chain
+	// migrator tests leaves unrecorded objects behind that break replays).
+	ctx := context.Background()
+	appURL, err := url.Parse(dsn)
+	require.NoError(t, err)
+	adminURL := *appURL
+	adminURL.User = url.UserPassword("postgres", "")
+	adminURL.Path = "/postgres"
+	admin, err := pgxpool.New(ctx, adminURL.String())
+	require.NoError(t, err)
+	defer admin.Close()
+	const testDB = "wp10_itest"
+	_, err = admin.Exec(ctx, fmt.Sprintf("DROP DATABASE IF EXISTS %s WITH (FORCE)", testDB))
+	require.NoError(t, err)
+	_, err = admin.Exec(ctx, fmt.Sprintf("CREATE DATABASE %s OWNER %s", testDB, appURL.User.Username()))
+	require.NoError(t, err)
+	adminDBURL := adminURL
+	adminDBURL.Path = "/" + testDB
+	adminDB, err := pgxpool.New(ctx, adminDBURL.String())
+	require.NoError(t, err)
+	_, err = adminDB.Exec(ctx, "CREATE EXTENSION IF NOT EXISTS postgis")
+	require.NoError(t, err)
+	adminDB.Close()
+
+	appURL.Path = "/" + testDB
+	pool, err := pgxpool.New(ctx, appURL.String())
 	require.NoError(t, err)
 	t.Cleanup(pool.Close)
 	return pool
@@ -56,7 +84,7 @@ func TestGeofenceV2MigrationAndCRUDIntegration(t *testing.T) {
 	}
 	var tableCount int
 	require.NoError(t, pool.QueryRow(ctx, `SELECT count(*) FROM information_schema.tables
-		WHERE table_name IN ('geofences','geofence_events','port_queue_observations')`).Scan(&tableCount))
+		WHERE table_name IN ('geofences','geofence_transition_events','port_queue_observations')`).Scan(&tableCount))
 	require.Equal(t, 3, tableCount)
 
 	// Versioning invariant: the partial unique index rejects a second ACTIVE.

@@ -434,7 +434,7 @@ func (g *GeoV2) listFenceEvents(writer http.ResponseWriter, request *http.Reques
 		writeError(writer, http.StatusServiceUnavailable, "FENCE_STORE_UNAVAILABLE: "+err.Error())
 		return
 	}
-	writeJSON(writer, http.StatusOK, map[string]any{"events": rows, "count": len(rows), "provenance": g.prov("geofence_events", g.now(), 0)})
+	writeJSON(writer, http.StatusOK, map[string]any{"events": rows, "count": len(rows), "provenance": g.prov("geofence_transition_events", g.now(), 0)})
 }
 
 // ─── Track APIs ─────────────────────────────────────────────────────────────

@@ -26,9 +26,15 @@ DECLARE
     end_ts TIMESTAMPTZ := ((day + 1)::timestamp AT TIME ZONE 'UTC');
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_class WHERE relname = partition_name) THEN
+        -- Emit UTC-explicit literals: a bare %L of a timestamptz renders in
+        -- the SESSION TimeZone, and the partition bound expression keeps the
+        -- literal text as entered (visible in pg_get_expr). Pin '+00' so the
+        -- stored bounds read UTC midnight under any session TimeZone.
         EXECUTE format(
             'CREATE TABLE %I PARTITION OF ais_positions FOR VALUES FROM (%L) TO (%L)',
-            partition_name, start_ts, end_ts);
+            partition_name,
+            to_char(start_ts AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS') || '+00',
+            to_char(end_ts AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS') || '+00');
     END IF;
     RETURN partition_name;
 END;
