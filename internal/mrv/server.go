@@ -78,14 +78,34 @@ func (server *Server) Handler(authenticator auth.Authenticator) http.Handler {
 	mux.Handle("GET /v1/mrv/factors",
 		auth.RequireRoles(http.HandlerFunc(server.listFactors),
 			RoleReader, RoleReporter, RoleVerifier, RoleFlagAdmin))
+	// Detailed operational status (CII config, deadlines) is authenticated
+	// reference data; the public /healthz below carries only {"status":"ok"}.
+	mux.Handle("GET /v1/status",
+		auth.RequireRoles(http.HandlerFunc(server.status),
+			RoleReader, RoleReporter, RoleVerifier, RoleFlagAdmin))
 	outer := http.NewServeMux()
 	outer.HandleFunc("GET /healthz", server.healthz)
-	outer.HandleFunc("GET /metrics", func(writer http.ResponseWriter, _ *http.Request) {
-		writer.Header().Set("Content-Type", "text/plain; version=0.0.4")
-		server.service.Metrics.WritePrometheus(writer)
-	})
+	// /metrics exposes operational internals; it is authenticated like
+	// every /v1 route, never anonymous.
+	outer.Handle("GET /metrics", auth.Middleware(authenticator, http.HandlerFunc(
+		func(writer http.ResponseWriter, _ *http.Request) {
+			writer.Header().Set("Content-Type", "text/plain; version=0.0.4")
+			server.service.Metrics.WritePrometheus(writer)
+		})))
 	outer.Handle("/", auth.Middleware(authenticator, mux))
-	return outer
+	return securityHeaders(outer)
+}
+
+// securityHeaders sets the platform HTTP security headers on every response
+// (HSTS, nosniff, frame deny, no-referrer), including error responses.
+func securityHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Strict-Transport-Security", "max-age=63072000; includeSubDomains")
+		writer.Header().Set("X-Content-Type-Options", "nosniff")
+		writer.Header().Set("X-Frame-Options", "DENY")
+		writer.Header().Set("Referrer-Policy", "no-referrer")
+		next.ServeHTTP(writer, request)
+	})
 }
 
 // principalOrFail resolves the authenticated principal or writes 403.
@@ -535,8 +555,16 @@ func (server *Server) listFactors(writer http.ResponseWriter, request *http.Requ
 	writeJSON(writer, http.StatusOK, map[string]any{"factors": factors})
 }
 
-// healthz reports mode and dependency posture truthfully.
+// healthz is a minimal public liveness probe: it reports only {"status":"ok"}
+// and never leaks configuration internals.
 func (server *Server) healthz(writer http.ResponseWriter, _ *http.Request) {
+	writer.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(writer).Encode(map[string]any{"status": "ok"})
+}
+
+// status reports mode and dependency posture truthfully to authenticated
+// principals (see GET /v1/status).
+func (server *Server) status(writer http.ResponseWriter, _ *http.Request) {
 	writer.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(writer).Encode(map[string]any{
 		"status":    "ok",

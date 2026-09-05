@@ -52,9 +52,36 @@ func TestHTTPRoleGating(t *testing.T) {
 		"op-1", "mrv-reader", "INTERNAL"))
 	require.Equal(t, http.StatusForbidden, response.Code)
 
-	// healthz is unauthenticated and honest about the absent CII config.
+	// healthz is a minimal public liveness probe: it never leaks CII config
+	// or deadlines (S4 regression).
 	response = httptest.NewRecorder()
 	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 	require.Equal(t, http.StatusOK, response.Code)
+	require.JSONEq(t, `{"status":"ok"}`, response.Body.String())
+
+	// /metrics is authenticated (S3 regression): anonymous -> 401.
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	require.Equal(t, http.StatusUnauthorized, response.Code)
+
+	// /v1/status carries the detailed operational view behind auth
+	// (S4 regression): anonymous -> 401, authenticated -> ciiConfig detail.
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/v1/status", nil))
+	require.Equal(t, http.StatusUnauthorized, response.Code)
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, trustedRequest(t, http.MethodGet, "/v1/status", "",
+		"op-1", "mrv-reader", "INTERNAL"))
+	require.Equal(t, http.StatusOK, response.Code)
 	require.Contains(t, response.Body.String(), `"loaded":false`)
+
+	// Every response carries the platform security headers (S5 regression).
+	for _, path := range []string{"/healthz", "/metrics", "/v1/status"} {
+		response = httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
+		require.Equal(t, "nosniff", response.Header().Get("X-Content-Type-Options"))
+		require.Equal(t, "DENY", response.Header().Get("X-Frame-Options"))
+		require.Equal(t, "no-referrer", response.Header().Get("Referrer-Policy"))
+		require.Contains(t, response.Header().Get("Strict-Transport-Security"), "max-age=")
+	}
 }
