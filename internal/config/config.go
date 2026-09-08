@@ -24,6 +24,7 @@ type Config struct {
 	// (0008_rls_ingest_login.sql).
 	IngestPostgresDSN string
 	RedisAddr         string
+	RedisPassword     string
 	KafkaBrokers      []string
 	DedupWindow       time.Duration
 	PublishAISRaw     bool
@@ -79,6 +80,7 @@ func FromEnv() (Config, error) {
 		PostgresDSN:       strings.TrimSpace(os.Getenv("GEO_PG_DSN")),
 		IngestPostgresDSN: strings.TrimSpace(os.Getenv("GEO_INGEST_PG_DSN")),
 		RedisAddr:         strings.TrimSpace(os.Getenv("GEO_REDIS_ADDR")),
+		RedisPassword:     os.Getenv("GEO_REDIS_PASSWORD"),
 		KafkaBrokers:      splitCSV(os.Getenv("GEO_KAFKA_BROKERS")),
 		PublishAISRaw:     parseBool(getenv("GEO_PUBLISH_AIS_RAW", "true")),
 		PrincipalID:       strings.TrimSpace(os.Getenv("GEO_PRODUCER_PRINCIPAL_ID")),
