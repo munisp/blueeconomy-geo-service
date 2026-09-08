@@ -120,7 +120,7 @@ func run(logger *log.Logger) error {
 		}
 	}()
 
-	redisClient := redis.NewClient(&redis.Options{Addr: cfg.RedisAddr})
+	redisClient := redis.NewClient(&redis.Options{Addr: cfg.RedisAddr, Password: cfg.RedisPassword})
 	defer redisClient.Close()
 	// otelredis client instrumentation (go-redis maintained; no-op spans
 	// when telemetry is disabled).
