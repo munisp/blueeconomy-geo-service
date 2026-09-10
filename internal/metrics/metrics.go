@@ -74,6 +74,25 @@ func (registry *Registry) Add(name string, labels map[string]string, delta int64
 	counter.Add(delta)
 }
 
+// Set stores an absolute gauge value (creating the series on first use).
+// Gauges share the counter machinery; exposition format is unchanged.
+func (registry *Registry) Set(name string, labels map[string]string, value int64) {
+	identifier := key(name, labels)
+	registry.mu.RLock()
+	counter, ok := registry.counters[identifier]
+	registry.mu.RUnlock()
+	if !ok {
+		registry.mu.Lock()
+		counter, ok = registry.counters[identifier]
+		if !ok {
+			counter = &atomic.Int64{}
+			registry.counters[identifier] = counter
+		}
+		registry.mu.Unlock()
+	}
+	counter.Store(value)
+}
+
 // Snapshot returns a copy of all counter values.
 func (registry *Registry) Snapshot() map[string]int64 {
 	registry.mu.RLock()
