@@ -87,6 +87,15 @@ type Config struct {
 	// RequestLog gates structured per-request JSON logging (unified
 	// observability, #16). Default on.
 	RequestLog bool
+
+	// MLStack gates the Phase-18 shadow-mode policy recommendation surface
+	// (/v1/geo/berths/recommendation, /v1/geo/routes/advice). Both empty =
+	// disabled (endpoints answer 503 RECOMMENDATION_UNCONFIGURED);
+	// half-configured fails startup. The token is env-only and never
+	// logged (mirrors singlewindow's ML_STACK_HTTP_URL pattern).
+	MLStackURL          string
+	MLStackServiceToken string
+	MLStackTimeout      time.Duration
 }
 
 // FromEnv loads and validates the configuration, failing closed on any
@@ -119,12 +128,20 @@ func FromEnv() (Config, error) {
 		FenceV2Ingest:     parseBool(getenv("GEO_FENCE_V2_INGEST", "false")),
 		PCSAISImportDSN:   strings.TrimSpace(os.Getenv("GEO_PCS_AIS_IMPORT_DSN")),
 		RequestLog:        parseBool(getenv("GEO_REQUEST_LOG", "true")),
+		MLStackURL:        strings.TrimSpace(os.Getenv("ML_STACK_HTTP_URL")),
+		// Secret, env-only; intentionally not defaulted.
+		MLStackServiceToken: strings.TrimSpace(os.Getenv("ML_STACK_SERVICE_TOKEN")),
 	}
 	pcsPoll, err := time.ParseDuration(getenv("GEO_PCS_AIS_IMPORT_POLL", "30s"))
 	if err != nil || pcsPoll <= 0 {
 		return config, fmt.Errorf("GEO_PCS_AIS_IMPORT_POLL: %w", err)
 	}
 	config.PCSAISImportPoll = pcsPoll
+	mlTimeout, err := time.ParseDuration(getenv("GEO_ML_STACK_TIMEOUT", "5s"))
+	if err != nil || mlTimeout <= 0 {
+		return config, fmt.Errorf("GEO_ML_STACK_TIMEOUT: %w", err)
+	}
+	config.MLStackTimeout = mlTimeout
 	dedupWindow, err := time.ParseDuration(getenv("GEO_DEDUP_WINDOW", "15s"))
 	if err != nil {
 		return config, fmt.Errorf("GEO_DEDUP_WINDOW: %w", err)
@@ -204,6 +221,12 @@ func FromEnv() (Config, error) {
 		default:
 			return config, fmt.Errorf("GEO_AUTH_MODE %q is not oidc or trusted_proxy", config.AuthMode)
 		}
+	}
+	if (config.MLStackURL == "") != (config.MLStackServiceToken == "") {
+		// Fail closed: half-configured policy scoring would otherwise either
+		// send unauthenticated calls to an authenticated endpoint or strand
+		// a token with no destination.
+		return config, errors.New("ML_STACK_HTTP_URL and ML_STACK_SERVICE_TOKEN must be set together (or both unset to disable the recommendation surface)")
 	}
 	return config, nil
 }

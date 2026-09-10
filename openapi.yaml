@@ -287,6 +287,98 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '409':
           description: outboxId already used with a different payload
+  /berths/recommendation:
+    post:
+      summary: Shadow-mode berth-allocation policy recommendation (Phase 18)
+      operationId: berthRecommendation
+      description: >-
+        Proxies the ml-stack /score/berth-allocation policy for the given
+        port and incoming vessel set and returns the suggested berth
+        assignment with mode "shadow" and policyVersion. Advisory only:
+        never auto-applied to the berth-slots system of record. Every
+        served recommendation is logged to recommendation_log first (the
+        future reward signal); a recommendation that cannot be logged is
+        not served. Requires ML_STACK_HTTP_URL + ML_STACK_SERVICE_TOKEN.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [portCode, vessels]
+              properties:
+                portCode: { type: string, pattern: '^[A-Z0-9]{2,16}$' }
+                vessels:
+                  type: array
+                  maxItems: 50
+                  items:
+                    type: object
+                    required: [mmsi]
+                    properties:
+                      mmsi: { type: string, pattern: '^[0-9]{9}$' }
+                      eta: { type: string, format: date-time }
+                      loaMeters: { type: number, minimum: 0 }
+                      draftMeters: { type: number, minimum: 0 }
+                berths:
+                  type: array
+                  maxItems: 200
+                  items:
+                    type: object
+                    required: [berthId]
+                    properties:
+                      berthId: { type: string, maxLength: 64 }
+                      lengthMeters: { type: number, minimum: 0 }
+                      depthMeters: { type: number, minimum: 0 }
+                      occupiedUntil: { type: string, format: date-time }
+      responses:
+        '200':
+          description: >-
+            Policy suggestion (shadow): {recommendationId, mode, policyVersion,
+            suggestion}. Logged under recommendationId for future reward joins.
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503':
+          description: >-
+            RECOMMENDATION_UNCONFIGURED (scorer not wired), POLICY_UNTRAINED
+            (ml-stack 409 passthrough — no promoted policy), SCORING_UNAVAILABLE
+            (scorer failure) or RECOMMENDATION_LOG_FAILED (fail-closed reward
+            trail).
+  /routes/advice:
+    post:
+      summary: Shadow-mode route-advice policy ranking (Phase 18)
+      operationId: routeAdvice
+      description: >-
+        Proxies the ml-stack /score/route-advice policy and returns route
+        options ranked by the policy with mode "shadow" and policyVersion.
+        Advisory only; logged before serving exactly like the berth
+        recommendation.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [origin, destination]
+              properties:
+                origin: { type: string, pattern: '^[A-Z0-9]{2,16}$' }
+                destination: { type: string, pattern: '^[A-Z0-9]{2,16}$' }
+                vessel:
+                  type: object
+                  properties:
+                    mmsi: { type: string, pattern: '^[0-9]{9}$' }
+                    eta: { type: string, format: date-time }
+                    loaMeters: { type: number, minimum: 0 }
+                    draftMeters: { type: number, minimum: 0 }
+                departureTime: { type: string, format: date-time }
+      responses:
+        '200':
+          description: Ranked route options (shadow); logged under recommendationId.
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503':
+          description: RECOMMENDATION_UNCONFIGURED / POLICY_UNTRAINED / SCORING_UNAVAILABLE / RECOMMENDATION_LOG_FAILED
 components:
   securitySchemes:
     bearerAuth:

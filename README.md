@@ -91,6 +91,7 @@ silently fall back to the shared plane.
 | GT06/Concox trackers (Tier-1) | `GEO_GT06_ADDR` (e.g. `:30002`) | Binary protocol, X.25 CRC verified, IMEI tokenized to pseudonymous vessel ref |
 | Mobile outbox (Tier-0) | REST `POST /v1/geo/app-reports` | `outbox_id` idempotency: 200 / idempotent / 409 |
 | Port-community AIS (G2) | `GEO_PCS_AIS_IMPORT_DSN` (+ `GEO_PCS_AIS_IMPORT_POLL`, default 30s) | Consumes port-interop `pcs_ais_positions` through the SAME ingest pipeline (no parallel plane); unset = disabled, capabilities report `configured:false` |
+| ML policy recommendations (Phase 18) | `ML_STACK_HTTP_URL` + `ML_STACK_SERVICE_TOKEN` (+ `GEO_ML_STACK_TIMEOUT`, default 5s) | Shadow-mode `POST /v1/geo/berths/recommendation` and `POST /v1/geo/routes/advice` proxied to ml-stack `/score/berth-allocation` / `/score/route-advice`. Advisory only — never auto-applied to any system of record; every served suggestion is logged to `recommendation_log` (migration 0018, future RL reward signal) before the response. Untrained policy (ml-stack 409) → honest 503 `POLICY_UNTRAINED`; scorer failure → 503 `SCORING_UNAVAILABLE`; log failure → 503 `RECOMMENDATION_LOG_FAILED`; unwired → 503 `RECOMMENDATION_UNCONFIGURED`. Half-configured (one var set) fails startup. |
 
 Phase-17 surfaces: `GET /v1/geo/vessels/density` (PostGIS grid aggregate,
 honest occupied-cells-only), `GET /v1/geo/stream` + `/v1/geo/stream/status`

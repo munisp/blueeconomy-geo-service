@@ -61,6 +61,11 @@ type Server struct {
 	// an honest 503 REALTIME_UNCONFIGURED (capability discovery stays
 	// stable). Wired by main when GEO_SSE_ENABLED=true.
 	Stream *StreamStatus
+	// Recommend wires the Phase-18 shadow-mode ML policy surface
+	// (/v1/geo/berths/recommendation, /v1/geo/routes/advice). When nil the
+	// routes answer an honest 503 RECOMMENDATION_UNCONFIGURED. Wired by
+	// main when ML_STACK_HTTP_URL + ML_STACK_SERVICE_TOKEN are set.
+	Recommend *Recommendations
 	// Capabilities carries honest deployment posture for the
 	// GET /v1/geo/capabilities discovery document (feature/config flags
 	// resolved at startup; never advertises unwired capability).
@@ -124,6 +129,7 @@ func (server *Server) Handler(authenticator auth.Authenticator, appReportRoutes 
 		server.registerSafetyRoutes(mux)
 	}
 	server.registerStreamRoutes(mux)
+	server.registerRecommendationRoutes(mux)
 	mux.Handle("GET /v1/geo/capabilities",
 		auth.RequireRoles(http.HandlerFunc(server.capabilities), "geo-reader", "geo-zone-maker", "geo-zone-checker", "geo-admin", "geo-ingest", "geo-sos-reader"))
 	outer := http.NewServeMux()
@@ -160,6 +166,14 @@ func (server *Server) capabilities(writer http.ResponseWriter, request *http.Req
 		"enabled":  server.Stream != nil && server.Stream.Hub != nil,
 		"endpoint": "GET /v1/geo/stream",
 		"status":   "GET /v1/geo/stream/status",
+	}
+	features["mlRecommendations"] = map[string]any{
+		"enabled": server.Recommend != nil,
+		"endpoints": []string{
+			"POST /v1/geo/berths/recommendation",
+			"POST /v1/geo/routes/advice",
+		},
+		"mode": "shadow (advisory only; never auto-applied; every served suggestion is logged)",
 	}
 	writeJSON(writer, http.StatusOK, map[string]any{"capabilities": features})
 }
