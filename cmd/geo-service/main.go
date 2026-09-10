@@ -35,6 +35,7 @@ import (
 	"github.com/munisp/blueeconomy-geo-service/internal/devices"
 	"github.com/munisp/blueeconomy-geo-service/internal/gtfsrt"
 	"github.com/munisp/blueeconomy-geo-service/internal/metrics"
+	"github.com/munisp/blueeconomy-geo-service/internal/mlstack"
 	"github.com/munisp/blueeconomy-geo-service/internal/realtime"
 	"github.com/munisp/blueeconomy-geo-service/internal/sign"
 	"github.com/munisp/blueeconomy-geo-service/internal/store"
@@ -282,8 +283,33 @@ func run(logger *log.Logger) error {
 		if hub != nil {
 			server.Stream = &api.StreamStatus{Hub: hub}
 		}
+		// Phase 18: shadow-mode ML policy recommendation surface
+		// (/v1/geo/berths/recommendation, /v1/geo/routes/advice), gated on
+		// ML_STACK_HTTP_URL + ML_STACK_SERVICE_TOKEN. Unset → routes answer
+		// an honest 503 RECOMMENDATION_UNCONFIGURED (registered regardless,
+		// same doctrine as the SSE surface).
+		if cfg.MLStackURL != "" {
+			mlClient, err := mlstack.NewClient(mlstack.Config{
+				BaseURL:      cfg.MLStackURL,
+				ServiceToken: cfg.MLStackServiceToken,
+				Timeout:      cfg.MLStackTimeout,
+			})
+			if err != nil {
+				return err
+			}
+			recommendations, err := api.NewRecommendations(mlClient, storage, registry)
+			if err != nil {
+				return err
+			}
+			server.Recommend = recommendations
+			logger.Printf("ml policy recommendations enabled (ML_STACK_HTTP_URL, shadow mode, timeout %s)", cfg.MLStackTimeout)
+		}
 		server.Capabilities = map[string]any{
 			"fenceV2Ingest": map[string]any{"enabled": cfg.FenceV2Ingest},
+			"mlRecommendations": map[string]any{
+				"configured": cfg.MLStackURL != "",
+				"note":       "shadow-mode berth/route policy recommendations via ml-stack when configured; logged, never auto-applied",
+			},
 			"pcsAisImport": map[string]any{
 				"configured": cfg.PCSAISImportDSN != "",
 				"note":       "consumes port-interop pcs_ais_positions into the shared pipeline when configured",
