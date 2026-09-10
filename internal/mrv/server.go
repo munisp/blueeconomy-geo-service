@@ -8,6 +8,7 @@ package mrv
 import (
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -34,6 +35,9 @@ const (
 type Server struct {
 	service *Service
 	tracer  trace.Tracer
+	// RequestLog, when non-nil, receives one structured JSON line per
+	// request (unified observability #16, same shape as geo-service).
+	RequestLog *log.Logger
 }
 
 // NewServer validates the wiring fail-closed.
@@ -59,6 +63,11 @@ func (server *Server) Handler(authenticator auth.Authenticator) http.Handler {
 		auth.RequireRoles(http.HandlerFunc(server.recordVoyage), RoleReporter))
 	mux.Handle("GET /v1/mrv/ships/{imo}/activity-estimate",
 		auth.RequireRoles(http.HandlerFunc(server.activityEstimate), RoleReporter, RoleVerifier))
+	// Per-voyage emissions (G8) and the by-voyage dashboard aggregate (#20).
+	mux.Handle("GET /v1/mrv/ships/{imo}/voyages/{voyageId}/emissions",
+		auth.RequireRoles(http.HandlerFunc(server.voyageEmissions), RoleReader, RoleReporter, RoleVerifier, RoleFlagAdmin))
+	mux.Handle("GET /v1/mrv/ships/{imo}/emissions/by-voyage",
+		auth.RequireRoles(http.HandlerFunc(server.voyageEmissionsSummary), RoleReader, RoleReporter, RoleVerifier, RoleFlagAdmin))
 	mux.Handle("POST /v1/mrv/reports/annual/{imo}/{year}/compile",
 		auth.RequireRoles(http.HandlerFunc(server.compileAnnual), RoleReporter))
 	// NOTE: the spec's "{id}:submit" custom-verb form is not expressible in
@@ -93,7 +102,44 @@ func (server *Server) Handler(authenticator auth.Authenticator) http.Handler {
 			server.service.Metrics.WritePrometheus(writer)
 		})))
 	outer.Handle("/", auth.Middleware(authenticator, mux))
-	return securityHeaders(outer)
+	return server.requestLogging(securityHeaders(outer))
+}
+
+// requestLogging emits one structured JSON line per request when RequestLog
+// is wired (#16). No headers or bodies are ever logged.
+func (server *Server) requestLogging(next http.Handler) http.Handler {
+	if server.RequestLog == nil {
+		return next
+	}
+	logger := server.RequestLog
+	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		start := time.Now()
+		recorder := &statusRecorder{ResponseWriter: writer, status: http.StatusOK}
+		next.ServeHTTP(recorder, request)
+		subject := ""
+		if principal, ok := auth.PrincipalFrom(request.Context()); ok {
+			subject = principal.Subject
+		}
+		logger.Printf(`{"ts":%q,"method":%q,"path":%q,"status":%d,"durationMs":%d,"subject":%q}`,
+			start.UTC().Format(time.RFC3339), request.Method, request.URL.Path,
+			recorder.status, time.Since(start).Milliseconds(), subject)
+	})
+}
+
+// statusRecorder captures the response status for the request log.
+type statusRecorder struct {
+	http.ResponseWriter
+	status int
+}
+
+func (recorder *statusRecorder) WriteHeader(status int) {
+	recorder.status = status
+	recorder.ResponseWriter.WriteHeader(status)
+}
+
+// Unwrap preserves http.ResponseController access to the underlying writer.
+func (recorder *statusRecorder) Unwrap() http.ResponseWriter {
+	return recorder.ResponseWriter
 }
 
 // securityHeaders sets the platform HTTP security headers on every response
@@ -366,6 +412,64 @@ func (server *Server) activityEstimate(writer http.ResponseWriter, request *http
 	default:
 		span.SetAttributes(attribute.Bool("mrv.insufficient_coverage", estimate.InsufficientCoverage))
 		writeJSON(writer, http.StatusOK, estimate)
+	}
+}
+
+// ---------------------------------------------------------------------
+// Per-voyage emissions (G8) and the by-voyage aggregate (#20)
+
+func (server *Server) voyageEmissions(writer http.ResponseWriter, request *http.Request) {
+	ctx, span := server.tracer.Start(request.Context(), "mrv.estimate.voyage-emissions")
+	defer span.End()
+	principal, ok := principalOrFail(writer, request)
+	if !ok {
+		return
+	}
+	result, err := server.service.VoyageEmissions(ctx, principal.Subject, request.PathValue("imo"),
+		request.PathValue("voyageId"), clearedLabels(principal.Clearance))
+	switch {
+	case errors.Is(err, ErrVoyageNotFound):
+		writeError(writer, http.StatusNotFound, err.Error())
+	case errors.Is(err, ErrShipNotFound):
+		writeError(writer, http.StatusNotFound, err.Error())
+	case errors.Is(err, ErrVoyageWindowIncomplete):
+		// Honest 422: the voyage window is not yet complete; nothing was
+		// estimated.
+		writeError(writer, http.StatusUnprocessableEntity, err.Error())
+	case errors.Is(err, ErrFactorUnavailable):
+		writeError(writer, http.StatusUnprocessableEntity, err.Error())
+	case err != nil:
+		writeError(writer, http.StatusInternalServerError, "voyage emissions computation failed")
+	default:
+		span.SetAttributes(attribute.Int("mrv.fuel_reports", result.FuelReportCount))
+		writeJSON(writer, http.StatusOK, result)
+	}
+}
+
+func (server *Server) voyageEmissionsSummary(writer http.ResponseWriter, request *http.Request) {
+	principal, ok := principalOrFail(writer, request)
+	if !ok {
+		return
+	}
+	from, err := time.Parse(time.RFC3339, strings.TrimSpace(request.URL.Query().Get("from")))
+	if err != nil {
+		writeError(writer, http.StatusBadRequest, "from must be RFC 3339")
+		return
+	}
+	to, err := time.Parse(time.RFC3339, strings.TrimSpace(request.URL.Query().Get("to")))
+	if err != nil {
+		writeError(writer, http.StatusBadRequest, "to must be RFC 3339")
+		return
+	}
+	summary, err := server.service.VoyageEmissionsSummaryForShip(request.Context(), principal.Subject,
+		request.PathValue("imo"), from, to, clearedLabels(principal.Clearance))
+	switch {
+	case errors.Is(err, ErrShipNotFound):
+		writeError(writer, http.StatusNotFound, err.Error())
+	case err != nil:
+		writeError(writer, http.StatusBadRequest, "voyage emissions summary failed: "+err.Error())
+	default:
+		writeJSON(writer, http.StatusOK, summary)
 	}
 }
 
