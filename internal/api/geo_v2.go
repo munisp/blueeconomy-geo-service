@@ -38,6 +38,10 @@ type GeoV2Store interface {
 	LatestPosition(ctx context.Context, mmsi string, clearedLabels []string) (store.TrackPointRow, error)
 	QueueObservations(ctx context.Context, portCode string, since time.Time, limit int) ([]store.QueueObservationRow, error)
 	InsertQueueObservation(ctx context.Context, row store.QueueObservationRow) error
+	// DensityGrid aggregates latest_positions into a micro-degree grid
+	// (G3 heatmap feed); returns the occupied cells and the freshest
+	// observation time across them.
+	DensityGrid(ctx context.Context, minLonMicros, minLatMicros, maxLonMicros, maxLatMicros int32, cellSizeMicros int64, clearedLabels []string) ([]store.DensityCellRow, time.Time, error)
 }
 
 // GeoV2 wires the WP-10 endpoints: versioned geofence CRUD, fence
@@ -99,6 +103,7 @@ func (server *Server) registerGeoV2Routes(mux *http.ServeMux) {
 		auth.RequireRoles(http.HandlerFunc(g.evaluatePositions), "geo-ingest", "geo-admin"))
 	read("GET /v1/geo/tracks/{mmsi}", g.queryTrack)
 	read("GET /v1/geo/vessels/nearest", g.nearestVessels)
+	read("GET /v1/geo/vessels/density", g.densityGrid)
 	read("GET /v1/geo/ports/{code}/approaches", g.portApproaches)
 	read("GET /v1/geo/ports/{code}/congestion/forecast", g.congestionForecast)
 	mux.Handle("POST /v1/geo/ports/{code}/queue-observations",
@@ -342,6 +347,7 @@ func (g *GeoV2) evaluatePositions(writer http.ResponseWriter, request *http.Requ
 	}
 	fences := make([]fence.Fence, 0, len(rows))
 	versions := map[string]int{}
+	names := map[string]string{}
 	for _, r := range rows {
 		var raw [][2]int32
 		if err := json.Unmarshal(r.VerticesMicros, &raw); err != nil {
@@ -357,6 +363,7 @@ func (g *GeoV2) evaluatePositions(writer http.ResponseWriter, request *http.Requ
 			DwellThresholdSeconds: r.DwellThresholdSeconds, DwellSpeedGateMilliknots: r.DwellSpeedGateMilliknots,
 		})
 		versions[r.GeofenceID] = r.Version
+		names[r.GeofenceID] = r.Name
 	}
 
 	type rejected struct {
@@ -381,7 +388,8 @@ func (g *GeoV2) evaluatePositions(writer http.ResponseWriter, request *http.Requ
 			payload := sign.GeofenceEventRecorded{
 				GeofenceEventID: eventID,
 				ZoneID:          ev.GeofenceID,
-				ZoneName:        ev.GeofenceID,
+				// G13: carry the fence name, never the id as a name stand-in.
+				ZoneName:        names[ev.GeofenceID],
 				Event:           string(ev.Type),
 				MMSI:            rep.MMSI,
 				LatitudeMicros:  rep.LatMicros,
