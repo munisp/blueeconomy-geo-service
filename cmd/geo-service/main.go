@@ -35,6 +35,7 @@ import (
 	"github.com/munisp/blueeconomy-geo-service/internal/devices"
 	"github.com/munisp/blueeconomy-geo-service/internal/gtfsrt"
 	"github.com/munisp/blueeconomy-geo-service/internal/metrics"
+	"github.com/munisp/blueeconomy-geo-service/internal/realtime"
 	"github.com/munisp/blueeconomy-geo-service/internal/sign"
 	"github.com/munisp/blueeconomy-geo-service/internal/store"
 	"github.com/munisp/blueeconomy-geo-service/internal/telemetry"
@@ -163,6 +164,32 @@ func run(logger *log.Logger) error {
 		return err
 	}
 
+	// G11: ingest-time WP-10 fence evaluation (GEO_FENCE_V2_INGEST=true).
+	// The evaluator reads ACTIVE fences platform-wide through the geo_ingest
+	// role connection and announces transitions through the pipeline itself.
+	if cfg.FenceV2Ingest {
+		evaluator, err := connectors.NewFenceV2Evaluator(storage)
+		if err != nil {
+			return err
+		}
+		pipeline.FenceV2 = evaluator
+		logger.Printf("fence v2 ingest evaluation enabled (GEO_FENCE_V2_INGEST)")
+	}
+
+	// G1: SSE fan-out hub (GEO_SSE_ENABLED=true). The pipeline broadcasts
+	// post-publish notifications; /v1/geo/stream serves authenticated,
+	// clearance-filtered subscribers.
+	var hub *realtime.Hub
+	if cfg.SSEEnabled {
+		hub, err = realtime.NewHub(registry)
+		if err != nil {
+			return err
+		}
+		defer hub.Shutdown(context.Background())
+		pipeline.Broadcast = realtime.BroadcastPipeline(hub, registry)
+		logger.Printf("sse fan-out enabled (GEO_SSE_ENABLED)")
+	}
+
 	// Connectors (each env-gated).
 	connectorErrors := make(chan error, 8)
 	started := 0
@@ -198,6 +225,22 @@ func run(logger *log.Logger) error {
 				connectorErrors <- err
 			}
 		}()
+	}
+	// G2: port-interop pcs_ais_positions consumer (GEO_PCS_AIS_IMPORT_DSN).
+	// Feeds the SAME pipeline as every other connector (no parallel plane);
+	// GT06 and the other connectors are untouched.
+	if cfg.PCSAISImportDSN != "" {
+		started++
+		importer := &connectors.PCSImporter{
+			DSN: cfg.PCSAISImportDSN, PollInterval: cfg.PCSAISImportPoll,
+			Pipeline: pipeline, Logger: logger, Metrics: registry,
+		}
+		go func() {
+			if err := importer.Run(ctx); err != nil {
+				connectorErrors <- err
+			}
+		}()
+		logger.Printf("pcs-ais importer enabled (GEO_PCS_AIS_IMPORT_DSN, poll %s)", cfg.PCSAISImportPoll)
 	}
 	if started == 0 && cfg.APIAddr == "" {
 		return errors.New("no connector enabled and no API address configured")
@@ -235,6 +278,21 @@ func run(logger *log.Logger) error {
 		}
 		safety.Events = pipeline
 		server.Safety = safety
+		// SSE fan-out + honest capability discovery (G1/#9/#5).
+		if hub != nil {
+			server.Stream = &api.StreamStatus{Hub: hub}
+		}
+		server.Capabilities = map[string]any{
+			"fenceV2Ingest": map[string]any{"enabled": cfg.FenceV2Ingest},
+			"pcsAisImport": map[string]any{
+				"configured": cfg.PCSAISImportDSN != "",
+				"note":       "consumes port-interop pcs_ais_positions into the shared pipeline when configured",
+			},
+			"requestLog": map[string]any{"enabled": cfg.RequestLog},
+		}
+		if cfg.RequestLog {
+			server.RequestLog = log.New(os.Stdout, "geo-request ", 0)
+		}
 		// GTFS static + GTFS-RT feeds (advisory §5): the AIS→GTFS-RT
 		// adapter, staleness-gated and fail-closed.
 		feedBuilder, err := gtfsrt.NewBuilder(storage, registry, gtfsrt.Config{

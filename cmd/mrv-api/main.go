@@ -171,6 +171,11 @@ func run(logger *log.Logger) error {
 	if err != nil {
 		return err
 	}
+	// Unified observability (#16): structured per-request JSON logging,
+	// default on (MRV_REQUEST_LOG=false disables), same shape as geo-service.
+	if strings.ToLower(strings.TrimSpace(getenv("MRV_REQUEST_LOG", "true"))) != "false" {
+		server.RequestLog = log.New(os.Stdout, "mrv-request ", 0)
+	}
 	var handler http.Handler = server.Handler(authenticator)
 	handler = telemetryPipeline.Middleware(handler)
 	httpServer := &http.Server{

@@ -90,6 +90,22 @@ silently fall back to the shared plane.
 | aisstream.io (dev/gap-fill) | `GEO_AISSTREAM_API_KEY` | Pre-decoded JSON over WebSocket; Nigerian AoI subscription by default |
 | GT06/Concox trackers (Tier-1) | `GEO_GT06_ADDR` (e.g. `:30002`) | Binary protocol, X.25 CRC verified, IMEI tokenized to pseudonymous vessel ref |
 | Mobile outbox (Tier-0) | REST `POST /v1/geo/app-reports` | `outbox_id` idempotency: 200 / idempotent / 409 |
+| Port-community AIS (G2) | `GEO_PCS_AIS_IMPORT_DSN` (+ `GEO_PCS_AIS_IMPORT_POLL`, default 30s) | Consumes port-interop `pcs_ais_positions` through the SAME ingest pipeline (no parallel plane); unset = disabled, capabilities report `configured:false` |
+
+Phase-17 surfaces: `GET /v1/geo/vessels/density` (PostGIS grid aggregate,
+honest occupied-cells-only), `GET /v1/geo/stream` + `/v1/geo/stream/status`
+(SSE fan-out of `geo.vessel-position.v1`/`geo.geofence-event.v1`, gated by
+`GEO_SSE_ENABLED=true`; notifications only, REST stays the source of truth),
+`GET /v1/geo/capabilities` (honest capability discovery),
+`GEO_FENCE_V2_INGEST=true` (ingest-time WP-10 fence evaluation, signed
+`geo.geofence-event.v1` + persisted transitions, migration 0017),
+`GET /v1/mrv/ships/{imo}/voyages/{voyageId}/emissions` and
+`GET /v1/mrv/ships/{imo}/emissions/by-voyage` (per-voyage CO2,
+time-proportional fuel allocation, signed `mrv.voyage-emissions.v1`;
+incomplete BOSP/EOSP windows answer honest 422, never estimates).
+`/metrics` is authenticated on both services; `/healthz` is the only public
+route. Structured per-request JSON logging: `GEO_REQUEST_LOG` /
+`MRV_REQUEST_LOG` (default on).
 
 Core env: `GEO_PG_DSN`, `GEO_REDIS_ADDR`, `GEO_KAFKA_BROKERS`,
 `ENVELOPE_SIGNING_PRIVATE_KEY` + `ENVELOPE_SIGNING_KEY_EPOCH` (fail-closed

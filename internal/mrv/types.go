@@ -39,6 +39,8 @@ const (
 	EventEmissionsAnnual  = "mrv.emissions-annual.v1"
 	EventSoC              = "mrv.soc.v1"
 	EventActivityEstimate = "mrv.activity-estimate.v1"
+	// EventVoyageEmissions is declared in voyage_emissions.go.
+	TopicVoyageEmissions   = "mrv.voyage-emissions"
 
 	TopicFuelReports       = "mrv.fuel-reports"
 	TopicVoyages           = "mrv.voyages"
@@ -63,6 +65,7 @@ var eventContracts = map[string]eventContract{
 	EventEmissionsAnnual:  {TopicAnnualReports, "MrvEmissionsAnnualReportSubmitted", "CONFIDENTIAL"},
 	EventSoC:              {TopicSoC, "MrvStatementOfComplianceIssued", "INTERNAL"},
 	EventActivityEstimate: {TopicActivityEstimates, "MrvActivityEstimateComputed", "INTERNAL"},
+	EventVoyageEmissions:  {TopicVoyageEmissions, "MrvVoyageEmissionsComputed", "CONFIDENTIAL"},
 }
 
 // Fail-closed domain errors.

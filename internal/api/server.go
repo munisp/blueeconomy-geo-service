@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -56,6 +57,17 @@ type Server struct {
 	// inspections, SAR coordination, marine accident investigation). When
 	// nil the safety routes are not registered.
 	Safety *Safety
+	// Stream wires the SSE fan-out (G1): when nil the stream routes answer
+	// an honest 503 REALTIME_UNCONFIGURED (capability discovery stays
+	// stable). Wired by main when GEO_SSE_ENABLED=true.
+	Stream *StreamStatus
+	// Capabilities carries honest deployment posture for the
+	// GET /v1/geo/capabilities discovery document (feature/config flags
+	// resolved at startup; never advertises unwired capability).
+	Capabilities map[string]any
+	// RequestLog, when non-nil, receives one structured JSON line per
+	// request (unified observability #16). Nil disables request logging.
+	RequestLog *log.Logger
 }
 
 // NewServer validates the wiring fail-closed.
@@ -69,7 +81,11 @@ func NewServer(storage *store.Store, registry *metrics.Registry) (*Server, error
 	return &Server{Store: storage, Metrics: registry}, nil
 }
 
-// Handler builds the authenticated route tree.
+// Handler builds the route tree. Consistent with mrv-api (G9): /healthz is
+// the public liveness probe carrying only {"status":"ok"}; /metrics exposes
+// operational internals and is authenticated like every /v1 route; all /v1
+// and /feeds routes sit behind the platform authenticator with per-route
+// role gates.
 func (server *Server) Handler(authenticator auth.Authenticator, appReportRoutes func(mux *http.ServeMux)) http.Handler {
 	mux := http.NewServeMux()
 	read := func(pattern string, handler http.HandlerFunc) {
@@ -107,15 +123,91 @@ func (server *Server) Handler(authenticator auth.Authenticator, appReportRoutes 
 	if server.Safety != nil {
 		server.registerSafetyRoutes(mux)
 	}
-	mux.HandleFunc("GET /healthz", func(writer http.ResponseWriter, _ *http.Request) {
+	server.registerStreamRoutes(mux)
+	mux.Handle("GET /v1/geo/capabilities",
+		auth.RequireRoles(http.HandlerFunc(server.capabilities), "geo-reader", "geo-zone-maker", "geo-zone-checker", "geo-admin", "geo-ingest", "geo-sos-reader"))
+	outer := http.NewServeMux()
+	// /healthz is the minimal public liveness probe (same posture as
+	// mrv-api); it never leaks configuration internals.
+	outer.HandleFunc("GET /healthz", func(writer http.ResponseWriter, _ *http.Request) {
 		writer.Header().Set("Content-Type", "application/json")
 		_, _ = writer.Write([]byte(`{"status":"ok"}`))
 	})
-	mux.HandleFunc("GET /metrics", func(writer http.ResponseWriter, _ *http.Request) {
-		writer.Header().Set("Content-Type", "text/plain; version=0.0.4")
-		server.Metrics.WritePrometheus(writer)
+	// /metrics exposes operational internals; it is authenticated like
+	// every /v1 route, never anonymous (consistent with mrv-api, G9).
+	outer.Handle("GET /metrics", auth.Middleware(authenticator, http.HandlerFunc(
+		func(writer http.ResponseWriter, _ *http.Request) {
+			writer.Header().Set("Content-Type", "text/plain; version=0.0.4")
+			server.Metrics.WritePrometheus(writer)
+		})))
+	outer.Handle("/", auth.Middleware(authenticator, mux))
+	return server.requestLogging(outer)
+}
+
+// capabilities: GET /v1/geo/capabilities — the honest capability discovery
+// document for frontends (#9): every entry reflects actual startup wiring,
+// never aspirational surface.
+func (server *Server) capabilities(writer http.ResponseWriter, request *http.Request) {
+	if _, ok := principalOrFail(writer, request); !ok {
+		return
+	}
+	features := map[string]any{}
+	for key, value := range server.Capabilities {
+		features[key] = value
+	}
+	features["densityGrid"] = map[string]any{"enabled": server.GeoV2 != nil, "endpoint": "GET /v1/geo/vessels/density"}
+	features["sse"] = map[string]any{
+		"enabled":  server.Stream != nil && server.Stream.Hub != nil,
+		"endpoint": "GET /v1/geo/stream",
+		"status":   "GET /v1/geo/stream/status",
+	}
+	writeJSON(writer, http.StatusOK, map[string]any{"capabilities": features})
+}
+
+// requestLogging emits one structured JSON line per request when RequestLog
+// is wired (unified observability, #16). The principal subject is logged
+// only as a digest-free subject string post-authentication; no headers or
+// bodies are ever logged.
+func (server *Server) requestLogging(next http.Handler) http.Handler {
+	if server.RequestLog == nil {
+		return next
+	}
+	logger := server.RequestLog
+	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		start := time.Now()
+		recorder := &statusRecorder{ResponseWriter: writer, status: http.StatusOK}
+		next.ServeHTTP(recorder, request)
+		subject := ""
+		if principal, ok := auth.PrincipalFrom(request.Context()); ok {
+			subject = principal.Subject
+		}
+		logger.Printf(`{"ts":%q,"method":%q,"path":%q,"status":%d,"durationMs":%d,"subject":%q}`,
+			start.UTC().Format(time.RFC3339), request.Method, request.URL.Path,
+			recorder.status, time.Since(start).Milliseconds(), subject)
 	})
-	return auth.Middleware(authenticator, mux)
+}
+
+// statusRecorder captures the response status for the request log.
+type statusRecorder struct {
+	http.ResponseWriter
+	status int
+}
+
+func (recorder *statusRecorder) WriteHeader(status int) {
+	recorder.status = status
+	recorder.ResponseWriter.WriteHeader(status)
+}
+
+// Flush preserves http.Flusher for the SSE stream through the recorder.
+func (recorder *statusRecorder) Flush() {
+	if flusher, ok := recorder.ResponseWriter.(http.Flusher); ok {
+		flusher.Flush()
+	}
+}
+
+// Unwrap preserves http.ResponseController access to the underlying writer.
+func (recorder *statusRecorder) Unwrap() http.ResponseWriter {
+	return recorder.ResponseWriter
 }
 
 // clearedLabels renders every ladder label the principal's clearance covers

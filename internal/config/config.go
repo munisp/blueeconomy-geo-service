@@ -69,6 +69,24 @@ type Config struct {
 	GT06Addr        string
 	ReplayFile      string
 	ReplayInterval  time.Duration
+
+	// SSEEnabled gates the in-process SSE fan-out hub (G1): validated
+	// positions and fence transitions are broadcast to authenticated
+	// /v1/geo/stream subscribers. Default off.
+	SSEEnabled bool
+	// FenceV2Ingest gates ingest-time WP-10 fence evaluation (G11): every
+	// validated position is folded into the fence engine and transitions
+	// emit signed geo.geofence-event.v1 envelopes + persist. Default off.
+	FenceV2Ingest bool
+	// PCSAISImportDSN gates the port-interop pcs_ais_positions consumer
+	// (G2). Empty disables the importer (capabilities report
+	// configured:false); set-but-unreachable aborts startup like every
+	// other connector.
+	PCSAISImportDSN  string
+	PCSAISImportPoll time.Duration
+	// RequestLog gates structured per-request JSON logging (unified
+	// observability, #16). Default on.
+	RequestLog bool
 }
 
 // FromEnv loads and validates the configuration, failing closed on any
@@ -97,7 +115,16 @@ func FromEnv() (Config, error) {
 		AISStreamAPIKey:   strings.TrimSpace(os.Getenv("GEO_AISSTREAM_API_KEY")),
 		GT06Addr:          strings.TrimSpace(os.Getenv("GEO_GT06_ADDR")),
 		ReplayFile:        strings.TrimSpace(os.Getenv("GEO_REPLAY_FILE")),
+		SSEEnabled:        parseBool(getenv("GEO_SSE_ENABLED", "false")),
+		FenceV2Ingest:     parseBool(getenv("GEO_FENCE_V2_INGEST", "false")),
+		PCSAISImportDSN:   strings.TrimSpace(os.Getenv("GEO_PCS_AIS_IMPORT_DSN")),
+		RequestLog:        parseBool(getenv("GEO_REQUEST_LOG", "true")),
 	}
+	pcsPoll, err := time.ParseDuration(getenv("GEO_PCS_AIS_IMPORT_POLL", "30s"))
+	if err != nil || pcsPoll <= 0 {
+		return config, fmt.Errorf("GEO_PCS_AIS_IMPORT_POLL: %w", err)
+	}
+	config.PCSAISImportPoll = pcsPoll
 	dedupWindow, err := time.ParseDuration(getenv("GEO_DEDUP_WINDOW", "15s"))
 	if err != nil {
 		return config, fmt.Errorf("GEO_DEDUP_WINDOW: %w", err)

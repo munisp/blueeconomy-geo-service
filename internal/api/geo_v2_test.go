@@ -27,6 +27,9 @@ type fakeGeoV2Store struct {
 	tracks    map[string][]store.TrackPointRow
 	queue     []store.QueueObservationRow
 	failReads bool
+
+	density     []store.DensityCellRow
+	densityAsOf time.Time
 }
 
 func (f *fakeGeoV2Store) maybeFail() error {
@@ -151,6 +154,24 @@ func (f *fakeGeoV2Store) QueueObservations(_ context.Context, code string, _ tim
 func (f *fakeGeoV2Store) InsertQueueObservation(_ context.Context, row store.QueueObservationRow) error {
 	f.queue = append(f.queue, row)
 	return nil
+}
+
+func (f *fakeGeoV2Store) DensityGrid(_ context.Context, minLon, minLat, maxLon, maxLat int32, cellMicros int64, _ []string) ([]store.DensityCellRow, time.Time, error) {
+	if err := f.maybeFail(); err != nil {
+		return nil, time.Time{}, err
+	}
+	if cellMicros <= 0 {
+		return nil, time.Time{}, errors.New("cell size must be positive micro-degrees")
+	}
+	cellsLat := (int64(maxLat)-int64(minLat))/cellMicros + 1
+	cellsLon := (int64(maxLon)-int64(minLon))/cellMicros + 1
+	if cellsLat*cellsLon > store.MaxDensityCells {
+		return nil, time.Time{}, errors.New("bbox at this cell size yields too many cells (max 250000): enlarge the cell or shrink the bbox")
+	}
+	if f.density != nil {
+		return f.density, f.densityAsOf, nil
+	}
+	return []store.DensityCellRow{}, time.Time{}, nil
 }
 
 // recordingPublisher records signed-envelope publications.
