@@ -345,6 +345,56 @@ func (store *Store) LatestPosition(ctx context.Context, mmsi string, clearedLabe
 	return r, nil
 }
 
+// ListActiveGeofencesPlatform returns every ACTIVE geofence platform-wide
+// for the ingest fence evaluator, on the dedicated geo_ingest connection
+// (policy geofences_ingest_read, 0014). This is the only platform-wide v2
+// fence read path; tenant callers use ListActiveGeofences.
+func (store *Store) ListActiveGeofencesPlatform(ctx context.Context) ([]FenceRow, error) {
+	out := []FenceRow{}
+	err := store.withIngestConn(ctx, func(tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, fenceSelect+` WHERE state = 'ACTIVE' ORDER BY geofence_id`)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			r, err := scanGeofence(rows)
+			if err != nil {
+				return err
+			}
+			out = append(out, r)
+		}
+		return rows.Err()
+	})
+	if err != nil {
+		return nil, fmt.Errorf("list platform geofences: %w", err)
+	}
+	return out, nil
+}
+
+// InsertGeofenceEventIngest persists one fence transition from the ingest
+// evaluator on the geo_ingest connection (INSERT grant + permissive ingest
+// insert policy, 0017). The tenant is taken from the fence's owning row;
+// the ingest writer is trusted to attribute the tenant because the fence
+// row it evaluated was read platform-wide under the same role.
+func (store *Store) InsertGeofenceEventIngest(ctx context.Context, ev FenceEventRow) error {
+	if strings.TrimSpace(ev.TenantID) == "" {
+		return errors.New("geofence transition event tenant id is required")
+	}
+	return store.withIngestConn(ctx, func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `INSERT INTO geofence_transition_events
+			(event_id, geofence_id, geofence_version, tenant_id, event_type, mmsi,
+			 latitude_micros, longitude_micros, classification, envelope_digest, occurred_at)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+			ev.EventID, ev.GeofenceID, ev.GeofenceVersion, ev.TenantID, ev.EventType, ev.MMSI,
+			ev.LatitudeMicros, ev.LongitudeMicros, ev.Classification, ev.EnvelopeDigest, ev.OccurredAt)
+		if err != nil {
+			return fmt.Errorf("insert ingest geofence event: %w", err)
+		}
+		return nil
+	})
+}
+
 // QueueObservations returns the recorded queue series for one port,
 // time-ascending, from a start time.
 func (store *Store) QueueObservations(ctx context.Context, portCode string, since time.Time, limit int) ([]QueueObservationRow, error) {
