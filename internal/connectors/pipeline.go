@@ -55,6 +55,16 @@ type Pipeline struct {
 	Principal sign.Provenance
 	// PublishRaw gates the ais.raw mirror topic (raw decoded frames).
 	PublishRaw bool
+	// Broadcast, when non-nil, fans validated positions and geofence
+	// transitions out to the SSE hub AFTER the authoritative Kafka publish
+	// succeeded (G1). It must never block or error the hot path; nil
+	// disables fan-out (GEO_SSE_ENABLED unset).
+	Broadcast func(eventType, classification string, occurredAt time.Time, payload any)
+	// FenceV2, when non-nil, runs the WP-10 fence engine on every validated
+	// position at ingest time (G11, GEO_FENCE_V2_INGEST=true): transitions
+	// emit signed geo.geofence-event.v1 envelopes and persist to
+	// geofence_transition_events. Nil keeps the legacy zone-state path only.
+	FenceV2 *FenceV2Evaluator
 }
 
 // IngestPosition is a normalized, fixed-point position ready for validation.
@@ -244,6 +254,20 @@ func (pipeline *Pipeline) HandlePosition(ctx context.Context, ingest IngestPosit
 		return err
 	}
 	pipeline.Metrics.Inc("geo_positions_published_total", map[string]string{"source_class": position.SourceClass})
+
+	// 7. WP-10 fence engine at ingest (G11), when enabled: same fail-closed
+	// publication doctrine as the legacy path — a transition that cannot be
+	// announced aborts the report rather than persisting silently.
+	if pipeline.FenceV2 != nil {
+		if err := pipeline.FenceV2.ObservePosition(ctx, pipeline, position); err != nil {
+			return fmt.Errorf("fence v2 ingest evaluation: %w", err)
+		}
+	}
+
+	// 8. SSE fan-out (notification only, after the authoritative publish).
+	if pipeline.Broadcast != nil {
+		pipeline.Broadcast(sign.EventVesselPosition, position.Classification, position.ObservedAt, payload)
+	}
 	return nil
 }
 
@@ -324,6 +348,9 @@ func (pipeline *Pipeline) publishGeofenceEvent(ctx context.Context, event store.
 		return err
 	}
 	pipeline.Metrics.Inc("geo_geofence_events_total", map[string]string{"event": event.Event})
+	if pipeline.Broadcast != nil {
+		pipeline.Broadcast(sign.EventGeofenceEvent, event.Classification, event.OccurredAt, payload)
+	}
 	return nil
 }
 
