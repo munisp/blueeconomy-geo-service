@@ -178,16 +178,20 @@ func (f *fakeGeoV2Store) DensityGrid(_ context.Context, minLon, minLat, maxLon, 
 type recordingPublisher struct {
 	mu        sync.Mutex
 	published []string
+	payloads  []any
+	headers   []map[string]string
 	fail      bool
 }
 
-func (r *recordingPublisher) PublishSignedEnvelope(_ context.Context, eventType, _ string, _ any, _ time.Time, _ string, _ map[string]string) error {
+func (r *recordingPublisher) PublishSignedEnvelope(_ context.Context, eventType, _ string, payload any, _ time.Time, _ string, headers map[string]string) error {
 	if r.fail {
 		return errors.New("kafka down")
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.published = append(r.published, eventType)
+	r.payloads = append(r.payloads, payload)
+	r.headers = append(r.headers, headers)
 	return nil
 }
 
