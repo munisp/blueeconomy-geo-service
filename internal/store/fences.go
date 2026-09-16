@@ -23,7 +23,7 @@ type FenceRow struct {
 	DwellSpeedGateMilliknots   int
 	State                      string
 	// ZoneCategory is the protection-zone category of this fence version
-	// (0019); "" on pre-0019 rows is normalized to "general" by readers.
+	// (0020); "" on pre-0020 rows is normalized to "general" by readers.
 	ZoneCategory               string
 	CreatedBy                  string
 	CreatedAt                  time.Time
@@ -44,7 +44,7 @@ type FenceEventRow struct {
 	EnvelopeDigest  string
 	OccurredAt      time.Time
 	// ZoneCategory snapshots the category of the fence version that produced
-	// the event (0019), so incursion review filters without fence history.
+	// the event (0020), so incursion review filters without fence history.
 	ZoneCategory    string
 }
 
@@ -197,7 +197,7 @@ func (store *Store) RetireGeofence(ctx context.Context, tenantID, geofenceID str
 	return nil
 }
 
-// zoneCategoryOrGeneral normalizes an empty category (pre-0019 callers) to
+// zoneCategoryOrGeneral normalizes an empty category (pre-0020 callers) to
 // "general"; admitted values pass through. The API write boundary validates
 // fail-closed before this point, so unknown values are stored as-is and
 // rejected by the CHECK constraint rather than silently rewritten.
@@ -311,17 +311,22 @@ func (store *Store) QueryTrack(ctx context.Context, mmsi string, from, to time.T
 	return out, rows.Err()
 }
 
-// NearestVessels returns the k nearest vessels with a recorded position
-// inside the radius, using the PostGIS geography index on the hot table.
+// NearestVessels returns the k nearest vessels whose LATEST position is
+// inside the radius. It reads latest_positions (one upsert row per vessel,
+// the same current-picture table DensityGrid uses) instead of picking each
+// vessel's newest in-radius fix from the ais_positions history: the old
+// query kept returning vessels that had left the area hours ago, with a
+// stale fix and a stale distance (M7).
 func (store *Store) NearestVessels(ctx context.Context, latMicros, lonMicros int32, radiusMeters float64, clearedLabels []string, limit int) ([]NearestVesselRow, error) {
 	point := fmt.Sprintf("SRID=4326;POINT(%s %s)", microsText(lonMicros), microsText(latMicros))
-	rows, err := store.pool.Query(ctx, `SELECT DISTINCT ON (mmsi) mmsi, ship_name,
-		latitude_micros, longitude_micros, COALESCE(speed_over_ground_milliknots, -1),
-		ST_Distance(geom, ST_GeogFromText($1)) AS distance_m, observed_at
-		FROM ais_positions
-		WHERE mmsi IS NOT NULL AND classification = ANY($2)
-		  AND ST_DWithin(geom, ST_GeogFromText($1), $3)
-		ORDER BY mmsi, observed_at DESC`, point, clearedLabels, radiusMeters)
+	rows, err := store.pool.Query(ctx, `SELECT l.mmsi, COALESCE(v.ship_name, ''),
+		l.latitude_micros, l.longitude_micros, COALESCE(l.speed_over_ground_milliknots, -1),
+		ST_Distance(l.geom, ST_GeogFromText($1)) AS distance_m, l.observed_at
+		FROM latest_positions l
+		LEFT JOIN vessels_static v ON v.mmsi = l.mmsi AND v.valid_to IS NULL
+		WHERE l.mmsi IS NOT NULL AND l.classification = ANY($2)
+		  AND ST_DWithin(l.geom, ST_GeogFromText($1), $3)
+		ORDER BY distance_m ASC LIMIT $4`, point, clearedLabels, radiusMeters, limit)
 	if err != nil {
 		return nil, fmt.Errorf("nearest vessels: %w", err)
 	}
