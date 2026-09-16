@@ -85,6 +85,12 @@ type GeofenceEventRecorded struct {
 	LongitudeMicros int32     `json:"longitudeMicros"`
 	OccurredAt      time.Time `json:"occurredAt"`
 	Classification  string    `json:"classification"`
+	// ZoneCategory snapshots the fence version's protection-zone category
+	// (Phase 19); empty means pre-0019/general.
+	ZoneCategory string `json:"zoneCategory,omitempty"`
+	// Alert is the deterministic alert token (PROTECTED_ZONE_ENTRY/EXIT)
+	// when a protected-category zone transitioned; empty when informational.
+	Alert string `json:"alert,omitempty"`
 }
 
 // AppPositionReported is the geo.app-position-report.v1 payload.
@@ -92,13 +98,13 @@ type AppPositionReported struct {
 	PositionReportID          string    `json:"positionReportId"`
 	ReporterID                string    `json:"reporterId"`
 	VesselReference           string    `json:"vesselReference"`
-	LatitudeMicros            int32     `json:"latitudeMicros"`
-	LongitudeMicros           int32     `json:"longitudeMicros"`
-	AccuracyM                 uint32    `json:"accuracyM"`
-	SpeedMillimetresPerSecond *uint32   `json:"speedMillimetresPerSecond,omitempty"`
-	RecordedAt                time.Time `json:"recordedAt"`
-	OutboxID                  string    `json:"outboxId"`
-	Classification            string    `json:"classification"`
+	LatitudeMicros            int32      `json:"latitudeMicros"`
+	LongitudeMicros           int32      `json:"longitudeMicros"`
+	AccuracyM                 uint32     `json:"accuracyM"`
+	SpeedMillimetresPerSecond *uint32    `json:"speedMillimetresPerSecond,omitempty"`
+	RecordedAt                time.Time  `json:"recordedAt"`
+	OutboxID                  string     `json:"outboxId"`
+	Classification            string     `json:"classification"`
 }
 
 // SosAlertRaised is the geo.sos.v1 payload. Classification floor: RESTRICTED.
@@ -134,6 +140,8 @@ type SosAlertResolved struct {
 	SosAlertID      string    `json:"sosAlertId"`
 	ReporterID      string    `json:"reporterId"`
 	VesselReference string    `json:"vesselReference"`
+	LatitudeMicros  int32     `json:"latitudeMicros"`
+	LongitudeMicros int32     `json:"longitudeMicros"`
 	ResolvedBy      string    `json:"resolvedBy"`
 	ResolvedAt      time.Time `json:"resolvedAt"`
 	Note            string    `json:"note,omitempty"`
