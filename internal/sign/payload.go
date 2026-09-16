@@ -85,6 +85,12 @@ type GeofenceEventRecorded struct {
 	LongitudeMicros int32     `json:"longitudeMicros"`
 	OccurredAt      time.Time `json:"occurredAt"`
 	Classification  string    `json:"classification"`
+	// ZoneCategory snapshots the fence version's protection-zone category
+	// (Phase 19); empty means pre-0019/general.
+	ZoneCategory string `json:"zoneCategory,omitempty"`
+	// Alert is the deterministic alert token (PROTECTED_ZONE_ENTRY/EXIT)
+	// when a protected-category zone transitioned; empty when informational.
+	Alert string `json:"alert,omitempty"`
 }
 
 // AppPositionReported is the geo.app-position-report.v1 payload.

@@ -22,6 +22,9 @@ type FenceRow struct {
 	DwellThresholdSeconds      int
 	DwellSpeedGateMilliknots   int
 	State                      string
+	// ZoneCategory is the protection-zone category of this fence version
+	// (0020); "" on pre-0020 rows is normalized to "general" by readers.
+	ZoneCategory               string
 	CreatedBy                  string
 	CreatedAt                  time.Time
 	RetiredAt                  *time.Time
@@ -40,6 +43,9 @@ type FenceEventRow struct {
 	Classification  string
 	EnvelopeDigest  string
 	OccurredAt      time.Time
+	// ZoneCategory snapshots the category of the fence version that produced
+	// the event (0020), so incursion review filters without fence history.
+	ZoneCategory    string
 }
 
 // QueueObservationRow is one recorded port queue-length observation.
@@ -71,13 +77,13 @@ type NearestVesselRow struct {
 
 const fenceSelect = `SELECT geofence_id, version, tenant_id, name, classification,
 	vertices_micros, dwell_threshold_seconds, dwell_speed_gate_milliknots,
-	state, created_by, created_at, retired_at FROM geofences`
+	state, zone_category, created_by, created_at, retired_at FROM geofences`
 
 func scanGeofence(row pgx.Row) (FenceRow, error) {
 	var r FenceRow
 	err := row.Scan(&r.GeofenceID, &r.Version, &r.TenantID, &r.Name, &r.Classification,
 		&r.VerticesMicros, &r.DwellThresholdSeconds, &r.DwellSpeedGateMilliknots,
-		&r.State, &r.CreatedBy, &r.CreatedAt, &r.RetiredAt)
+		&r.State, &r.ZoneCategory, &r.CreatedBy, &r.CreatedAt, &r.RetiredAt)
 	return r, err
 }
 
@@ -160,15 +166,15 @@ func (store *Store) CreateGeofenceVersion(ctx context.Context, row FenceRow, exp
 	var created FenceRow
 	err = tx.QueryRow(ctx, `INSERT INTO geofences
 		(geofence_id, version, tenant_id, name, classification, geom, vertices_micros,
-		 dwell_threshold_seconds, dwell_speed_gate_milliknots, state, created_by)
-		VALUES ($1,$2,$3,$4,$5, ST_GeogFromText($6), $7, $8, $9, 'ACTIVE', $10)
+		 dwell_threshold_seconds, dwell_speed_gate_milliknots, state, zone_category, created_by)
+		VALUES ($1,$2,$3,$4,$5, ST_GeogFromText($6), $7, $8, $9, 'ACTIVE', $10, $11)
 		RETURNING geofence_id, version, tenant_id, name, classification, vertices_micros,
-		 dwell_threshold_seconds, dwell_speed_gate_milliknots, state, created_by, created_at, retired_at`,
+		 dwell_threshold_seconds, dwell_speed_gate_milliknots, state, zone_category, created_by, created_at, retired_at`,
 		row.GeofenceID, next, row.TenantID, row.Name, row.Classification, wkt, row.VerticesMicros,
-		row.DwellThresholdSeconds, row.DwellSpeedGateMilliknots, row.CreatedBy).
+		row.DwellThresholdSeconds, row.DwellSpeedGateMilliknots, zoneCategoryOrGeneral(row.ZoneCategory), row.CreatedBy).
 		Scan(&created.GeofenceID, &created.Version, &created.TenantID, &created.Name, &created.Classification,
 			&created.VerticesMicros, &created.DwellThresholdSeconds, &created.DwellSpeedGateMilliknots,
-			&created.State, &created.CreatedBy, &created.CreatedAt, &created.RetiredAt)
+			&created.State, &created.ZoneCategory, &created.CreatedBy, &created.CreatedAt, &created.RetiredAt)
 	if err != nil {
 		return FenceRow{}, fmt.Errorf("insert geofence version: %w", err)
 	}
@@ -189,6 +195,17 @@ func (store *Store) RetireGeofence(ctx context.Context, tenantID, geofenceID str
 		return pgx.ErrNoRows
 	}
 	return nil
+}
+
+// zoneCategoryOrGeneral normalizes an empty category (pre-0020 callers) to
+// "general"; admitted values pass through. The API write boundary validates
+// fail-closed before this point, so unknown values are stored as-is and
+// rejected by the CHECK constraint rather than silently rewritten.
+func zoneCategoryOrGeneral(category string) string {
+	if strings.TrimSpace(category) == "" {
+		return "general"
+	}
+	return category
 }
 
 // polygonWKT renders a closed ring as WKT in lon/lat order with integer
@@ -229,10 +246,11 @@ func (store *Store) InsertGeofenceEvent(ctx context.Context, ev FenceEventRow) e
 	return store.WithTenant(ctx, ev.TenantID, func(tx pgx.Tx) error {
 		_, err := tx.Exec(ctx, `INSERT INTO geofence_transition_events
 			(event_id, geofence_id, geofence_version, tenant_id, event_type, mmsi,
-			 latitude_micros, longitude_micros, classification, envelope_digest, occurred_at)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+			 latitude_micros, longitude_micros, classification, envelope_digest, occurred_at, zone_category)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
 			ev.EventID, ev.GeofenceID, ev.GeofenceVersion, ev.TenantID, ev.EventType, ev.MMSI,
-			ev.LatitudeMicros, ev.LongitudeMicros, ev.Classification, ev.EnvelopeDigest, ev.OccurredAt)
+			ev.LatitudeMicros, ev.LongitudeMicros, ev.Classification, ev.EnvelopeDigest, ev.OccurredAt,
+			zoneCategoryOrGeneral(ev.ZoneCategory))
 		if err != nil {
 			return fmt.Errorf("insert geofence event: %w", err)
 		}
@@ -246,7 +264,7 @@ func (store *Store) ListGeofenceEvents(ctx context.Context, tenantID, geofenceID
 	out := []FenceEventRow{}
 	err := store.WithTenant(ctx, tenantID, func(tx pgx.Tx) error {
 		rows, err := tx.Query(ctx, `SELECT event_id, geofence_id, geofence_version, event_type, mmsi,
-			latitude_micros, longitude_micros, classification, envelope_digest, occurred_at
+			latitude_micros, longitude_micros, classification, envelope_digest, occurred_at, zone_category
 			FROM geofence_transition_events
 			WHERE tenant_id = $1 AND geofence_id = $2 AND classification = ANY($3) AND envelope_digest <> ''
 			ORDER BY occurred_at DESC LIMIT $4`, tenantID, geofenceID, clearedLabels, limit)
@@ -257,7 +275,7 @@ func (store *Store) ListGeofenceEvents(ctx context.Context, tenantID, geofenceID
 		for rows.Next() {
 			var r FenceEventRow
 			if err := rows.Scan(&r.EventID, &r.GeofenceID, &r.GeofenceVersion, &r.EventType, &r.MMSI,
-				&r.LatitudeMicros, &r.LongitudeMicros, &r.Classification, &r.EnvelopeDigest, &r.OccurredAt); err != nil {
+				&r.LatitudeMicros, &r.LongitudeMicros, &r.Classification, &r.EnvelopeDigest, &r.OccurredAt, &r.ZoneCategory); err != nil {
 				return fmt.Errorf("scan geofence event: %w", err)
 			}
 			out = append(out, r)
@@ -389,10 +407,11 @@ func (store *Store) InsertGeofenceEventIngest(ctx context.Context, ev FenceEvent
 	return store.withIngestConn(ctx, func(tx pgx.Tx) error {
 		_, err := tx.Exec(ctx, `INSERT INTO geofence_transition_events
 			(event_id, geofence_id, geofence_version, tenant_id, event_type, mmsi,
-			 latitude_micros, longitude_micros, classification, envelope_digest, occurred_at)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+			 latitude_micros, longitude_micros, classification, envelope_digest, occurred_at, zone_category)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
 			ev.EventID, ev.GeofenceID, ev.GeofenceVersion, ev.TenantID, ev.EventType, ev.MMSI,
-			ev.LatitudeMicros, ev.LongitudeMicros, ev.Classification, ev.EnvelopeDigest, ev.OccurredAt)
+			ev.LatitudeMicros, ev.LongitudeMicros, ev.Classification, ev.EnvelopeDigest, ev.OccurredAt,
+			zoneCategoryOrGeneral(ev.ZoneCategory))
 		if err != nil {
 			return fmt.Errorf("insert ingest geofence event: %w", err)
 		}
