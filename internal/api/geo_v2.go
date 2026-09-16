@@ -121,6 +121,7 @@ type fenceView struct {
 	DwellThresholdSeconds    int             `json:"dwellThresholdSeconds"`
 	DwellSpeedGateMilliknots int             `json:"dwellSpeedGateMilliknots"`
 	State                    string          `json:"state"`
+	ZoneCategory             string          `json:"zoneCategory"`
 	CreatedBy                string          `json:"createdBy"`
 	CreatedAt                string          `json:"createdAt"`
 	RetiredAt                *string         `json:"retiredAt,omitempty"`
@@ -131,7 +132,8 @@ func viewOf(row store.FenceRow) fenceView {
 		GeofenceID: row.GeofenceID, Version: row.Version, Name: row.Name,
 		Classification: row.Classification, VerticesMicros: row.VerticesMicros,
 		DwellThresholdSeconds: row.DwellThresholdSeconds, DwellSpeedGateMilliknots: row.DwellSpeedGateMilliknots,
-		State: row.State, CreatedBy: row.CreatedBy, CreatedAt: row.CreatedAt.UTC().Format(time.RFC3339),
+		State: row.State, ZoneCategory: normalizeCategory(row.ZoneCategory),
+		CreatedBy: row.CreatedBy, CreatedAt: row.CreatedAt.UTC().Format(time.RFC3339),
 	}
 	if row.RetiredAt != nil {
 		s := row.RetiredAt.UTC().Format(time.RFC3339)
@@ -194,7 +196,19 @@ type fenceUpsertRequest struct {
 	VerticesMicros           json.RawMessage `json:"verticesMicros"`
 	DwellThresholdSeconds    int             `json:"dwellThresholdSeconds"`
 	DwellSpeedGateMilliknots int             `json:"dwellSpeedGateMilliknots"`
+	ZoneCategory             string          `json:"zoneCategory"`
 	ExpectedVersion          int             `json:"expectedVersion"`
+}
+
+// normalizeCategory maps the empty category (pre-0019 rows) to "general".
+// Unknown values cannot reach here: the write boundary rejects them and the
+// CHECK constraint enforces the admitted set in storage.
+func normalizeCategory(category string) string {
+	normalized, ok := fence.NormalizeZoneCategory(category)
+	if !ok {
+		return string(fence.CategoryGeneral)
+	}
+	return string(normalized)
 }
 
 func (g *GeoV2) decodeFenceRequest(writer http.ResponseWriter, request *http.Request) (fenceUpsertRequest, []fence.Point, bool) {
@@ -213,6 +227,10 @@ func (g *GeoV2) decodeFenceRequest(writer http.ResponseWriter, request *http.Req
 	}
 	if _, err := sign.ParseClassification(req.Classification); err != nil {
 		writeError(writer, http.StatusBadRequest, "classification must be one of PUBLIC..SECRET")
+		return req, nil, false
+	}
+	if _, ok := fence.NormalizeZoneCategory(req.ZoneCategory); !ok {
+		writeError(writer, http.StatusBadRequest, "zoneCategory must be one of general, mpa, eez_restricted, traffic_separation, fishing_closure, anchorage")
 		return req, nil, false
 	}
 	var raw [][2]int32
@@ -269,6 +287,7 @@ func (g *GeoV2) upsertFence(writer http.ResponseWriter, request *http.Request, r
 		GeofenceID: req.GeofenceID, TenantID: tenantID, Name: req.Name, Classification: req.Classification,
 		VerticesMicros: req.VerticesMicros, DwellThresholdSeconds: req.DwellThresholdSeconds,
 		DwellSpeedGateMilliknots: req.DwellSpeedGateMilliknots, CreatedBy: principal.Subject,
+		ZoneCategory: normalizeCategory(req.ZoneCategory),
 	}, expectedVersion)
 	if err != nil {
 		if strings.HasPrefix(err.Error(), "VERSION_CONFLICT") {
@@ -348,6 +367,7 @@ func (g *GeoV2) evaluatePositions(writer http.ResponseWriter, request *http.Requ
 	fences := make([]fence.Fence, 0, len(rows))
 	versions := map[string]int{}
 	names := map[string]string{}
+	categories := map[string]fence.ZoneCategory{}
 	for _, r := range rows {
 		var raw [][2]int32
 		if err := json.Unmarshal(r.VerticesMicros, &raw); err != nil {
@@ -364,6 +384,7 @@ func (g *GeoV2) evaluatePositions(writer http.ResponseWriter, request *http.Requ
 		})
 		versions[r.GeofenceID] = r.Version
 		names[r.GeofenceID] = r.Name
+		categories[r.GeofenceID] = fence.ZoneCategory(normalizeCategory(r.ZoneCategory))
 	}
 
 	type rejected struct {
@@ -385,6 +406,13 @@ func (g *GeoV2) evaluatePositions(writer http.ResponseWriter, request *http.Requ
 		for _, ev := range events {
 			eventID := uuid.NewString()
 			occurredAt := time.Unix(ev.OccurredAtUnix, 0).UTC()
+			category := categories[ev.GeofenceID]
+			if category == "" {
+				category = fence.CategoryGeneral
+			}
+			// Phase 19: protected-category zones announce the deterministic
+			// alert token (PROTECTED_ZONE_ENTRY/EXIT) on the signed envelope.
+			alert := fence.ZoneAlert(category, ev.Type)
 			payload := sign.GeofenceEventRecorded{
 				GeofenceEventID: eventID,
 				ZoneID:          ev.GeofenceID,
@@ -396,11 +424,17 @@ func (g *GeoV2) evaluatePositions(writer http.ResponseWriter, request *http.Requ
 				LongitudeMicros: rep.LonMicros,
 				OccurredAt:      occurredAt,
 				Classification:  "INTERNAL",
+				ZoneCategory:    string(category),
+				Alert:           alert,
 			}
 			canonical, _ := json.Marshal(payload)
 			digest := sha256.Sum256(canonical)
+			headers := map[string]string{"producer": "geo-fence-engine", "zoneCategory": string(category)}
+			if alert != "" {
+				headers["alert"] = alert
+			}
 			if err := g.FenceEvents.PublishSignedEnvelope(request.Context(), sign.EventGeofenceEvent,
-				eventID, payload, occurredAt, "INTERNAL", map[string]string{"producer": "geo-fence-engine"}); err != nil {
+				eventID, payload, occurredAt, "INTERNAL", headers); err != nil {
 				// Fail-closed: a transition that cannot be announced is not persisted.
 				writeError(writer, http.StatusServiceUnavailable, "FENCE_EVENT_PUBLISH_FAILED: "+err.Error())
 				return
@@ -410,6 +444,7 @@ func (g *GeoV2) evaluatePositions(writer http.ResponseWriter, request *http.Requ
 				TenantID: tenantID, EventType: string(ev.Type), MMSI: rep.MMSI,
 				LatitudeMicros: rep.LatMicros, LongitudeMicros: rep.LonMicros,
 				Classification: "INTERNAL", EnvelopeDigest: hex.EncodeToString(digest[:]), OccurredAt: occurredAt,
+				ZoneCategory: string(category),
 			}); err != nil {
 				writeError(writer, http.StatusServiceUnavailable, "FENCE_EVENT_PERSIST_FAILED: "+err.Error())
 				return
@@ -418,6 +453,7 @@ func (g *GeoV2) evaluatePositions(writer http.ResponseWriter, request *http.Requ
 				"eventId": eventID, "geofenceId": ev.GeofenceID, "geofenceVersion": ev.Version,
 				"eventType": ev.Type, "mmsi": rep.MMSI, "occurredAt": occurredAt.Format(time.RFC3339),
 				"envelopeDigest": hex.EncodeToString(digest[:]),
+				"zoneCategory": string(category), "alert": alert,
 			})
 		}
 	}
