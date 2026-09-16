@@ -140,8 +140,6 @@ type SosAlertResolved struct {
 	SosAlertID      string    `json:"sosAlertId"`
 	ReporterID      string    `json:"reporterId"`
 	VesselReference string    `json:"vesselReference"`
-	LatitudeMicros  int32     `json:"latitudeMicros"`
-	LongitudeMicros int32     `json:"longitudeMicros"`
 	ResolvedBy      string    `json:"resolvedBy"`
 	ResolvedAt      time.Time `json:"resolvedAt"`
 	Note            string    `json:"note,omitempty"`
