@@ -138,6 +138,14 @@ func (evaluator *FenceV2Evaluator) ObservePosition(ctx context.Context, publishe
 		}
 		eventID := "gfv2-" + uuid.NewString()
 		occurredAt := time.Unix(event.OccurredAtUnix, 0).UTC()
+		// Phase 19: snapshot the fence version's protection-zone category and
+		// announce the deterministic alert token on protected zones (mirrors
+		// POST /v1/geo/fences/evaluate).
+		category, ok := fence.NormalizeZoneCategory(row.ZoneCategory)
+		if !ok {
+			category = fence.CategoryGeneral
+		}
+		alert := fence.ZoneAlert(category, event.Type)
 		payload := sign.GeofenceEventRecorded{
 			GeofenceEventID: eventID,
 			ZoneID:          event.GeofenceID,
@@ -148,13 +156,19 @@ func (evaluator *FenceV2Evaluator) ObservePosition(ctx context.Context, publishe
 			LongitudeMicros: position.LongitudeMicros,
 			OccurredAt:      occurredAt,
 			Classification:  classification,
+			ZoneCategory:    string(category),
+			Alert:           alert,
 		}
 		canonical, _ := json.Marshal(payload)
 		digest := sha256.Sum256(canonical)
+		headers := map[string]string{"producer": "geo-fence-engine", "zoneCategory": string(category)}
+		if alert != "" {
+			headers["alert"] = alert
+		}
 		// Fail-closed: announce first; a transition that cannot be announced
 		// is not persisted (mirrors POST /v1/geo/fences/evaluate).
 		if err := publisher.PublishSignedEnvelope(ctx, sign.EventGeofenceEvent,
-			eventID, payload, occurredAt, classification, map[string]string{"producer": "geo-fence-engine"}); err != nil {
+			eventID, payload, occurredAt, classification, headers); err != nil {
 			return fmt.Errorf("FENCE_EVENT_PUBLISH_FAILED: %w", err)
 		}
 		if err := evaluator.Store.InsertGeofenceEventIngest(ctx, store.FenceEventRow{
@@ -162,6 +176,7 @@ func (evaluator *FenceV2Evaluator) ObservePosition(ctx context.Context, publishe
 			TenantID: row.TenantID, EventType: string(event.Type), MMSI: position.MMSI,
 			LatitudeMicros: position.LatitudeMicros, LongitudeMicros: position.LongitudeMicros,
 			Classification: classification, EnvelopeDigest: hex.EncodeToString(digest[:]), OccurredAt: occurredAt,
+			ZoneCategory: string(category),
 		}); err != nil {
 			return fmt.Errorf("FENCE_EVENT_PERSIST_FAILED: %w", err)
 		}
