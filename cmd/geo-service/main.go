@@ -102,6 +102,13 @@ func run(logger *log.Logger) error {
 			return err
 		}
 	}
+	// Phase 19: config-gated protection-zone seeding (GEO_ZONE_SEED_GEOJSON).
+	// Loads real, operator-provided zone boundaries from a GeoJSON file as
+	// version-1 geofences; idempotent (existing zone ids are skipped).
+	// Nothing is bundled — unset means the empty state, which is honest.
+	if err := seedZonesFromGeoJSON(ctx, storage, logger); err != nil {
+		return err
+	}
 	// Provision today's and tomorrow's position partitions, then daily.
 	if err := storage.EnsurePositionPartitions(ctx, time.Now(), time.Now().Add(24*time.Hour)); err != nil {
 		return err
@@ -114,7 +121,7 @@ func run(logger *log.Logger) error {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				if err := storage.EnsurePositionPartitions(ctx, time.Now(), time.Now().Add(24*time.Hour)); err != nil {
+				if err := storage.EnsurePositionPartitions(ctx, time.Now().Add(24*time.Hour)); err != nil {
 					logger.Printf("partition provisioning: %v", err)
 					registry.Inc("geo_partition_errors_total", nil)
 				}
