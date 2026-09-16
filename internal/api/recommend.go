@@ -215,7 +215,7 @@ func (server *Server) routeAdvice(writer http.ResponseWriter, request *http.Requ
 		return
 	}
 	var payload routeAdviceRequest
-	if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+	if err := json.NewDecoder(http.MaxBytesReader(writer, request.Body, 1<<20)).Decode(&payload); err != nil {
 		writeError(writer, http.StatusBadRequest, "request body is not valid JSON")
 		return
 	}

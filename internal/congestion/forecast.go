@@ -174,7 +174,9 @@ func ForecastSeries(portCode string, observations []Observation, stepSeconds int
 }
 
 // seasonalIndices computes normalized multiplicative seasonal indices by
-// averaging the ratio of each season position to its centred moving average.
+// averaging the ratio of each season position to its forward-window moving
+// average (the window starts AT the position; this is a forward, not
+// centred, detrending — labelled honestly).
 func seasonalIndices(y []float64, period int) []float64 {
 	sums := make([]float64, period)
 	counts := make([]int, period)
@@ -322,4 +324,45 @@ func clampNonNeg(v float64) float64 {
 		return 0
 	}
 	return v
+}
+
+// MedianIntervalSeconds derives the dominant observation cadence of a
+// recorded series (median of successive timestamp deltas, sorted). It
+// returns 0 when the series is too short or irregular to name a cadence —
+// callers must then fail honestly instead of assuming hourly steps (M2:
+// seasonalPeriod=24 only means "daily" at a 1-hour cadence).
+func MedianIntervalSeconds(observations []Observation) int64 {
+	if len(observations) < 2 {
+		return 0
+	}
+	times := make([]int64, len(observations))
+	for i, o := range observations {
+		times[i] = o.ObservedAtUnix
+	}
+	sort.Slice(times, func(i, j int) bool { return times[i] < times[j] })
+	deltas := make([]int64, 0, len(times)-1)
+	for i := 1; i < len(times); i++ {
+		if d := times[i] - times[i-1]; d > 0 {
+			deltas = append(deltas, d)
+		}
+	}
+	if len(deltas) == 0 {
+		return 0
+	}
+	sort.Slice(deltas, func(i, j int) bool { return deltas[i] < deltas[j] })
+	return deltas[len(deltas)/2]
+}
+
+// DailySeasonalPeriod converts a cadence in seconds into the number of
+// observation steps spanning one day. Returns 0 (non-seasonal fallback)
+// when the cadence cannot tile a day into at least two honest steps.
+func DailySeasonalPeriod(stepSeconds int64) int {
+	if stepSeconds <= 0 || stepSeconds > 12*3600 {
+		return 0
+	}
+	period := int(math.Round(86400.0 / float64(stepSeconds)))
+	if period < 2 {
+		return 0
+	}
+	return period
 }

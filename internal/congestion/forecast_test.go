@@ -153,3 +153,62 @@ func TestPredictOneStepMatchesServedModel(t *testing.T) {
 	require.InDelta(t, fc.Points[0].QueueLength, predictOneStep(y, 24, len(y)), 1e-9,
 		"backtest refit must be identical to the served model pipeline")
 }
+
+func TestMedianIntervalSeconds(t *testing.T) {
+	// 5-minute cadence with one gap: median stays 300s.
+	var obs []Observation
+	base := int64(1_700_000_000)
+	for i := 0; i < 20; i++ {
+		obs = append(obs, Observation{ObservedAtUnix: base + int64(i)*300, QueueLength: float64(i)})
+	}
+	obs = append(obs, Observation{ObservedAtUnix: base + 20*300 + 900, QueueLength: 21})
+	if got := MedianIntervalSeconds(obs); got != 300 {
+		t.Fatalf("median interval = %d, want 300", got)
+	}
+	if got := MedianIntervalSeconds(obs[:1]); got != 0 {
+		t.Fatalf("single observation must yield no cadence, got %d", got)
+	}
+}
+
+func TestDailySeasonalPeriod(t *testing.T) {
+	cases := map[int64]int{
+		300:  288, // 5-minute cadence: a daily cycle is 288 steps, not 24
+		900:  96,
+		3600: 24,
+		0:    0,     // no cadence -> non-seasonal fallback
+		13 * 3600: 0, // cadence coarser than half a day cannot tile a day
+	}
+	for step, want := range cases {
+		if got := DailySeasonalPeriod(step); got != want {
+			t.Fatalf("DailySeasonalPeriod(%d) = %d, want %d", step, got, want)
+		}
+	}
+}
+
+func TestForecastHonorsDerivedCadence(t *testing.T) {
+	// A daily sinusoid sampled every 5 minutes must be forecast with a
+	// 288-step seasonal period and 5-minute horizon steps (M2).
+	var obs []Observation
+	base := int64(1_700_000_000)
+	for i := 0; i < 3*288; i++ {
+		obs = append(obs, Observation{
+			ObservedAtUnix: base + int64(i)*300,
+			QueueLength:    10 + 5*math.Sin(2*math.Pi*float64(i)/288),
+		})
+	}
+	step := MedianIntervalSeconds(obs)
+	fc, err := ForecastSeries("NGAPP", obs, step, 12, DailySeasonalPeriod(step))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fc.SeasonalPeriod != 288 {
+		t.Fatalf("seasonal period = %d, want 288 for 5-minute cadence", fc.SeasonalPeriod)
+	}
+	if len(fc.Points) != 12 {
+		t.Fatalf("points = %d, want 12", len(fc.Points))
+	}
+	// Horizon axis must advance in 5-minute steps from the last observation.
+	if fc.Points[0].AtUnix != base+int64(3*288)*300 {
+		t.Fatalf("first forecast at %d, want %d", fc.Points[0].AtUnix, base+int64(3*288)*300)
+	}
+}

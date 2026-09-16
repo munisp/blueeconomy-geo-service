@@ -27,6 +27,17 @@ const EventVoyageEmissions = "mrv.voyage-emissions.v1"
 // window is unknown, so per-voyage CO2 is honestly not computable yet.
 var ErrVoyageWindowIncomplete = errors.New("voyage has no complete BOSP/EOSP window: per-voyage emissions are not computable until both bounds are recorded")
 
+// ErrVoyageZeroDurationWindow marks voyages whose BOSP and EOSP coincide:
+// the window allocates zero fuel by construction, so reporting a computed
+// zero with fuelReportCount:0 would masquerade as a real measurement.
+var ErrVoyageZeroDurationWindow = errors.New("ZERO_DURATION_WINDOW: BOSP and EOSP coincide; there is no window to allocate fuel over")
+
+// ErrVoyageOverlapDoubleCount marks summary voyages whose windows overlap
+// another recorded voyage: the same fuel-period hours would be allocated
+// to both, so the overlapping voyages are excluded from the summary total
+// and listed honestly instead of being double-counted (M8).
+var ErrVoyageOverlapDoubleCount = errors.New("OVERLAPPING_VOYAGE_WINDOW: voyage window overlaps another recorded voyage; per-voyage allocation would double-count the shared fuel hours")
+
 // VoyageGradeEmissions is one fuel grade's allocated share of the voyage.
 type VoyageGradeEmissions struct {
 	FuelGrade               string `json:"fuelGrade"`
@@ -104,6 +115,9 @@ func (service *Service) VoyageEmissions(ctx context.Context, actor, imoNumber, v
 			return ErrVoyageWindowIncomplete
 		}
 		from, to := voyage.BospAt.UTC(), voyage.EospAt.UTC()
+		if !from.Before(to) {
+			return ErrVoyageZeroDurationWindow
+		}
 		rows, err := tx.Query(ctx, `SELECT fuel_grade, fuel_tonnes_milli, period_from, period_to
 			FROM mrv_fuel_reports
 			WHERE imo_number = $1 AND period_from < $3 AND period_to > $2
@@ -218,7 +232,12 @@ func (service *Service) VoyageEmissionsSummaryForShip(ctx context.Context, actor
 		Voyages: []VoyageEmissionsResource{}, Skipped: []VoyageSkip{},
 		ComputedAt: time.Now().UTC().Truncate(time.Microsecond),
 	}
-	var voyageIDs []string
+	type voyageWindow struct {
+		id   string
+		bosp time.Time
+		eosp time.Time
+	}
+	var voyages []voyageWindow
 	err := service.withActor(ctx, actor, func(tx pgx.Tx) error {
 		var exists bool
 		if err := tx.QueryRow(ctx, `SELECT true FROM mrv_ships WHERE imo_number = $1`, imoNumber).Scan(&exists); err != nil {
@@ -227,7 +246,7 @@ func (service *Service) VoyageEmissionsSummaryForShip(ctx context.Context, actor
 			}
 			return err
 		}
-		rows, err := tx.Query(ctx, `SELECT voyage_id FROM mrv_voyages
+		rows, err := tx.Query(ctx, `SELECT voyage_id, bosp_at, eosp_at FROM mrv_voyages
 			WHERE imo_number = $1 AND bosp_at IS NOT NULL AND eosp_at IS NOT NULL
 			  AND bosp_at < $3 AND eosp_at > $2 ORDER BY bosp_at`, imoNumber, from.UTC(), to.UTC())
 		if err != nil {
@@ -235,11 +254,11 @@ func (service *Service) VoyageEmissionsSummaryForShip(ctx context.Context, actor
 		}
 		defer rows.Close()
 		for rows.Next() {
-			var id string
-			if err := rows.Scan(&id); err != nil {
+			var v voyageWindow
+			if err := rows.Scan(&v.id, &v.bosp, &v.eosp); err != nil {
 				return err
 			}
-			voyageIDs = append(voyageIDs, id)
+			voyages = append(voyages, v)
 		}
 		return rows.Err()
 	})
@@ -265,10 +284,39 @@ func (service *Service) VoyageEmissionsSummaryForShip(ctx context.Context, actor
 		}
 		return rows.Err()
 	})
-	for _, id := range voyageIDs {
-		computed, err := service.VoyageEmissions(ctx, actor, imoNumber, id, clearedLabels)
-		if errors.Is(err, ErrVoyageNotFound) || errors.Is(err, ErrVoyageWindowIncomplete) {
-			summary.Skipped = append(summary.Skipped, VoyageSkip{VoyageID: id, Reason: err.Error()})
+	// M8 honesty guards BEFORE any allocation is summed:
+	// - zero-duration windows are skipped with an explicit reason, never
+	//   reported as a computed 0 with fuelReportCount:0;
+	// - voyages whose windows overlap another recorded voyage would
+	//   double-count the shared fuel-period hours across the summary total,
+	//   so every voyage involved in an overlap is excluded from the total
+	//   and listed with an explicit reason (the per-voyage endpoint still
+	//   computes each one individually).
+	overlapping := map[string]bool{}
+	computable := make([]voyageWindow, 0, len(voyages))
+	for _, v := range voyages {
+		if !v.bosp.Before(v.eosp) {
+			summary.Skipped = append(summary.Skipped, VoyageSkip{VoyageID: v.id, Reason: ErrVoyageZeroDurationWindow.Error()})
+			continue
+		}
+		computable = append(computable, v)
+	}
+	for i := 0; i < len(computable); i++ {
+		for j := i + 1; j < len(computable); j++ {
+			a, b := computable[i], computable[j]
+			if a.bosp.Before(b.eosp) && b.bosp.Before(a.eosp) {
+				overlapping[a.id], overlapping[b.id] = true, true
+			}
+		}
+	}
+	for _, v := range computable {
+		if overlapping[v.id] {
+			summary.Skipped = append(summary.Skipped, VoyageSkip{VoyageID: v.id, Reason: ErrVoyageOverlapDoubleCount.Error()})
+			continue
+		}
+		computed, err := service.VoyageEmissions(ctx, actor, imoNumber, v.id, clearedLabels)
+		if errors.Is(err, ErrVoyageNotFound) || errors.Is(err, ErrVoyageWindowIncomplete) || errors.Is(err, ErrVoyageZeroDurationWindow) {
+			summary.Skipped = append(summary.Skipped, VoyageSkip{VoyageID: v.id, Reason: err.Error()})
 			continue
 		}
 		if err != nil {

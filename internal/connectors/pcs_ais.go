@@ -8,6 +8,7 @@ import (
 	"math"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/munisp/blueeconomy-geo-service/internal/sign"
@@ -20,13 +21,16 @@ import (
 // publish pipeline as every other connector — no parallel ingestion path,
 // no schema drift. The source rows carry double-precision degrees; they are
 // converted once at this boundary into the fixed-point micro-degree
-// integers the geo plane stores (round-half-away-from-zero).
+// integers the geo plane stores (round to nearest, ties to even).
 //
 // Config-gated and fail-closed: GEO_PCS_AIS_IMPORT_DSN unset disables the
 // importer entirely (capabilities report configured:false); set but
 // unreachable/invalid aborts startup like every other connector.
-// Ingestion is idempotent: the watermark is the greatest consumed
-// message_ts, and the pipeline dedup window absorbs replays inside it.
+// Ingestion is idempotent: the watermark is the composite (message_ts,
+// mmsi) cursor of the last consumed row, so a batch boundary that cuts
+// inside a tie group (many MMSIs sharing one message_ts — the source PK
+// is (mmsi, message_ts)) never silently skips the remaining rows; the
+// pipeline dedup window absorbs replays inside it.
 type PCSImporter struct {
 	DSN          string
 	PollInterval time.Duration
@@ -49,6 +53,36 @@ type pcsAISRow struct {
 	CourseDegrees float64
 	Heading       *int32
 	MessageTS     time.Time
+}
+
+// pcsCursor is the composite consumption watermark (message_ts, mmsi).
+// A bare message_ts watermark loses rows whenever a batch boundary falls
+// inside a tie group of equal timestamps (H1).
+type pcsCursor struct {
+	ts   time.Time
+	mmsi string
+}
+
+// strictlyAfter reports whether a row at (ts, mmsi) lies strictly after the
+// cursor — the exact predicate of pcsPollQuery's WHERE clause, kept here so
+// tests exercise the same semantics the SQL applies.
+func (cursor pcsCursor) strictlyAfter(ts time.Time, mmsi string) bool {
+	return ts.After(cursor.ts) || (ts.Equal(cursor.ts) && mmsi > cursor.mmsi)
+}
+
+// pcsPollQuery pages the source plane in (message_ts, mmsi) order with a
+// composite-cursor predicate: rows at the cursor timestamp whose mmsi has
+// not been consumed yet are re-fetched instead of skipped.
+const pcsPollQuery = `SELECT mmsi, imo, latitude, longitude, speed_knots,
+	course_degrees, heading, message_ts
+	FROM pcs_ais_positions
+	WHERE message_ts > $1 OR (message_ts = $1 AND mmsi > $2)
+	ORDER BY message_ts ASC, mmsi ASC LIMIT $3`
+
+// pcsQuerier is the subset of *pgxpool.Pool the importer needs (an
+// interface so the poll loop can be regression-tested without a database).
+type pcsQuerier interface {
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
 }
 
 // microsFromDegrees converts double degrees to fixed-point micro-degrees
@@ -105,18 +139,18 @@ func (importer *PCSImporter) Run(ctx context.Context) error {
 		logger = log.Default()
 	}
 	logger.Printf("pcs-ais importer: polling every %s (batch %d)", importer.PollInterval, batch)
-	watermark := time.Now().UTC().Add(-5 * time.Minute)
+	cursor := pcsCursor{ts: time.Now().UTC().Add(-5 * time.Minute)}
 	ticker := time.NewTicker(importer.PollInterval)
 	defer ticker.Stop()
 	for {
-		advanced, err := importer.poll(ctx, pool, watermark, batch)
+		advanced, err := importer.poll(ctx, pool, cursor, batch)
 		if err != nil {
 			if importer.Metrics != nil {
 				importer.Metrics.Inc("geo_pcs_ais_import_errors_total", nil)
 			}
 			logger.Printf("pcs-ais importer poll: %v", err)
-		} else if !advanced.IsZero() {
-			watermark = advanced
+		} else if !advanced.ts.IsZero() {
+			cursor = advanced
 		}
 		select {
 		case <-ctx.Done():
@@ -126,15 +160,12 @@ func (importer *PCSImporter) Run(ctx context.Context) error {
 	}
 }
 
-// poll consumes one batch at-or-after the watermark and returns the new
-// watermark (zero when no rows were consumed).
-func (importer *PCSImporter) poll(ctx context.Context, pool *pgxpool.Pool, watermark time.Time, batch int) (time.Time, error) {
-	rows, err := pool.Query(ctx, `SELECT mmsi, imo, latitude, longitude, speed_knots,
-		course_degrees, heading, message_ts
-		FROM pcs_ais_positions WHERE message_ts > $1
-		ORDER BY message_ts ASC LIMIT $2`, watermark, batch)
+// poll consumes one batch strictly after the cursor and returns the new
+// cursor (zero when no rows were consumed).
+func (importer *PCSImporter) poll(ctx context.Context, pool pcsQuerier, cursor pcsCursor, batch int) (pcsCursor, error) {
+	rows, err := pool.Query(ctx, pcsPollQuery, cursor.ts, cursor.mmsi, batch)
 	if err != nil {
-		return time.Time{}, fmt.Errorf("pcs ais query: %w", err)
+		return pcsCursor{}, fmt.Errorf("pcs ais query: %w", err)
 	}
 	defer rows.Close()
 	batchRows := make([]pcsAISRow, 0, batch)
@@ -142,12 +173,12 @@ func (importer *PCSImporter) poll(ctx context.Context, pool *pgxpool.Pool, water
 		var row pcsAISRow
 		if err := rows.Scan(&row.MMSI, &row.IMO, &row.Latitude, &row.Longitude,
 			&row.SpeedKnots, &row.CourseDegrees, &row.Heading, &row.MessageTS); err != nil {
-			return time.Time{}, fmt.Errorf("pcs ais scan: %w", err)
+			return pcsCursor{}, fmt.Errorf("pcs ais scan: %w", err)
 		}
 		batchRows = append(batchRows, row)
 	}
 	if err := rows.Err(); err != nil {
-		return time.Time{}, err
+		return pcsCursor{}, err
 	}
 	for _, row := range batchRows {
 		sog := milliknotsFromKnots(row.SpeedKnots)
@@ -172,14 +203,15 @@ func (importer *PCSImporter) poll(ctx context.Context, pool *pgxpool.Pool, water
 			Position:   position,
 			PayloadKey: fmt.Sprintf("pcs-ais:%s:%d", row.MMSI, row.MessageTS.UTC().Unix()),
 		}); err != nil {
-			return time.Time{}, fmt.Errorf("pcs ais ingest mmsi %s: %w", row.MMSI, err)
+			return pcsCursor{}, fmt.Errorf("pcs ais ingest mmsi %s: %w", row.MMSI, err)
 		}
 		if importer.Metrics != nil {
 			importer.Metrics.Inc("geo_pcs_ais_imported_total", nil)
 		}
 	}
 	if len(batchRows) == 0 {
-		return time.Time{}, nil
+		return pcsCursor{}, nil
 	}
-	return batchRows[len(batchRows)-1].MessageTS.UTC(), nil
+	last := batchRows[len(batchRows)-1]
+	return pcsCursor{ts: last.MessageTS.UTC(), mmsi: last.MMSI}, nil
 }
