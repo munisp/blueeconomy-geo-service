@@ -98,13 +98,13 @@ type AppPositionReported struct {
 	PositionReportID          string    `json:"positionReportId"`
 	ReporterID                string    `json:"reporterId"`
 	VesselReference           string    `json:"vesselReference"`
-	LatitudeMicros            int32      `json:"latitudeMicros"`
-	LongitudeMicros           int32      `json:"longitudeMicros"`
-	AccuracyM                 uint32     `json:"accuracyM"`
-	SpeedMillimetresPerSecond *uint32    `json:"speedMillimetresPerSecond,omitempty"`
-	RecordedAt                time.Time  `json:"recordedAt"`
-	OutboxID                  string     `json:"outboxId"`
-	Classification            string     `json:"classification"`
+	LatitudeMicros            int32     `json:"latitudeMicros"`
+	LongitudeMicros           int32     `json:"longitudeMicros"`
+	AccuracyM                 uint32    `json:"accuracyM"`
+	SpeedMillimetresPerSecond *uint32   `json:"speedMillimetresPerSecond,omitempty"`
+	RecordedAt                time.Time `json:"recordedAt"`
+	OutboxID                  string    `json:"outboxId"`
+	Classification            string    `json:"classification"`
 }
 
 // SosAlertRaised is the geo.sos.v1 payload. Classification floor: RESTRICTED.
