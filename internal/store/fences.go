@@ -304,7 +304,7 @@ func (store *Store) QueryTrack(ctx context.Context, mmsi string, from, to time.T
 	for rows.Next() {
 		var r TrackPointRow
 		if err := rows.Scan(&r.LatitudeMicros, &r.LongitudeMicros, &r.SogMilliknots, &r.ObservedAt); err != nil {
-			return fmt.Errorf("scan track point: %w", err)
+			return nil, fmt.Errorf("scan track point: %w", err)
 		}
 		out = append(out, r)
 	}
@@ -330,7 +330,7 @@ func (store *Store) NearestVessels(ctx context.Context, latMicros, lonMicros int
 	for rows.Next() {
 		var r NearestVesselRow
 		if err := rows.Scan(&r.MMSI, &r.ShipName, &r.LatitudeMicros, &r.LongitudeMicros, &r.SogMilliknots, &r.DistanceMeters, &r.ObservedAt); err != nil {
-			return fmt.Errorf("scan nearest vessel: %w", err)
+			return nil, fmt.Errorf("scan nearest vessel: %w", err)
 		}
 		latest = append(latest, r)
 	}
@@ -428,7 +428,7 @@ func (store *Store) QueueObservations(ctx context.Context, portCode string, sinc
 	for rows.Next() {
 		var r QueueObservationRow
 		if err := rows.Scan(&r.PortCode, &r.QueueLength, &r.Source, &r.ObservedAt); err != nil {
-			return fmt.Errorf("scan queue observation: %w", err)
+			return nil, fmt.Errorf("scan queue observation: %w", err)
 		}
 		out = append(out, r)
 	}

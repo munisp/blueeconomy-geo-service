@@ -121,7 +121,7 @@ func run(logger *log.Logger) error {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				if err := storage.EnsurePositionPartitions(ctx, time.Now().Add(24*time.Hour)); err != nil {
+				if err := storage.EnsurePositionPartitions(ctx, time.Now(), time.Now().Add(24*time.Hour)); err != nil {
 					logger.Printf("partition provisioning: %v", err)
 					registry.Inc("geo_partition_errors_total", nil)
 				}
