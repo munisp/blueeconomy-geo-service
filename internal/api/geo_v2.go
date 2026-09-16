@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -684,7 +685,24 @@ func (g *GeoV2) congestionForecast(writer http.ResponseWriter, request *http.Req
 	for i, r := range rows {
 		obs[i] = congestion.Observation{ObservedAtUnix: r.ObservedAt.Unix(), QueueLength: float64(r.QueueLength)}
 	}
-	fc, err := congestion.ForecastSeries(code, obs, 3600, horizon, 24)
+	// M2: derive the cadence from the recorded series instead of assuming
+	// hourly observations — with 5-minute ingest, stepSeconds=3600 and
+	// seasonalPeriod=24 would mislabel both the horizon axis and the daily
+	// cycle by 12x. When the series names no cadence, fail honestly (409),
+	// never silently forecast on a wrong step grid.
+	step := congestion.MedianIntervalSeconds(obs)
+	if step <= 0 {
+		writeJSON(writer, http.StatusConflict, map[string]any{
+			"port": code, "error": "INSUFFICIENT_HISTORY: recorded queue series has no usable observation cadence", "recordedObservations": len(obs),
+			"model": congestion.ModelLabel,
+		})
+		return
+	}
+	horizonSteps := int(math.Round(float64(horizon) * 3600.0 / float64(step)))
+	if horizonSteps < 1 {
+		horizonSteps = 1
+	}
+	fc, err := congestion.ForecastSeries(code, obs, step, horizonSteps, congestion.DailySeasonalPeriod(step))
 	if errors.Is(err, congestion.ErrInsufficientHistory) {
 		writeJSON(writer, http.StatusConflict, map[string]any{
 			"port": code, "error": err.Error(), "recordedObservations": len(obs),
