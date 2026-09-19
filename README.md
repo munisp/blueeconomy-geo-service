@@ -279,3 +279,25 @@ moved to `.github/workflows/` once a workflow-scoped token is available.
 - **Classification-floor enforcement on reads** is applied in the API via the
   clearance ladder (reader clearance >= row classification); RLS governs
   tenant isolation, identical to the maritime-intelligence doctrine.
+
+## Configuration reference (previously undocumented variables)
+
+| Variable | Default | Effect |
+|---|---|---|
+| `GEO_DB_POOL_MAX_CONNS` | pgx default (max(4, NumCPU)) | Max open connections in the read-model pool |
+| `GEO_DB_POOL_MIN_CONNS` | 0 | Minimum idle connections kept warm |
+| `GEO_DB_POOL_MAX_CONN_IDLE_SEC` | pgx default | Max connection idle time (seconds) before close |
+| `GEO_DB_POOL_MAX_CONN_LIFE_SEC` | pgx default | Max connection lifetime (seconds) |
+| `GEO_DEVICES_PG_DSN` | unset (device plane disabled) | `geo_devices` role connection for the `/v1/devices*` plane; absent it, device routes answer 503 (fail-closed) |
+| `GEO_DEVICE_KEY_GRACE` | `24h` | Key-rotation grace window during which the old device key remains valid after rotation approval |
+| `GEO_KAFKA_BATCH_SIZE` | 0 (kafka-go default) | Messages per producer batch |
+| `GEO_KAFKA_BATCH_TIMEOUT_MS` | kafka-go default | Producer batch flush timeout (milliseconds) |
+| `GEO_OIDC_CA_FILE` | system pool | PEM file with the CA that signs the OIDC JWKS endpoint TLS certificate (also `MRV_OIDC_CA_FILE` for mrv-api) |
+| `GEO_ZONE_SEED_GEOJSON` | unset (no seeding) | Path to a GeoJSON file of protection zones seeded at boot; requires `GEO_ZONE_SEED_TENANT` |
+| `GEO_ZONE_SEED_TENANT` | — | Owning tenant for seeded zones; required when `GEO_ZONE_SEED_GEOJSON` is set |
+| `OTEL_SERVICE_NAME` | `blueeconomy-geo-service` | Overrides the OpenTelemetry service.name resource attribute |
+| `PROFILE` | — | Seed-tool production gate: `cmd/seed` refuses to run when `PROFILE=prod` (or `ENV=production`) |
+| `SEED_DEMO` | — | Must be explicitly `true` for `cmd/seed` to load demo fixtures |
+| `DATABASE_URL` | — | DSN used by `cmd/seed` (the seed tool only; the service itself uses the `GEO_*_PG_DSN` family) |
+
+All variables fail closed: an unparseable value aborts startup rather than silently defaulting.
