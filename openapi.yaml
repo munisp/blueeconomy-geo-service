@@ -17,11 +17,24 @@ info:
     events); vessel-360 recentZones is read with the caller's tenant bound
     and is empty for tenant-less principals.
 servers:
-  - url: /v1/geo
+  - url: /
 security:
   - bearerAuth: []
+tags:
+  - { name: vessels, description: Position plane reads (shared national picture, clearance-scoped) }
+  - { name: devices, description: Fleet device plane — provisioning, rotation, telemetry, OTA }
+  - { name: fences, description: Tenant geofence zones (v1, maker/checker) }
+  - { name: fences-v2, description: Versioned geofences with dwell semantics (WP-10) }
+  - { name: density, description: Server-side aggregation and congestion surfaces }
+  - { name: stream, description: SSE realtime fan-out (notifications only) }
+  - { name: recommendations, description: Shadow-mode ML policy recommendations (Phase 18) }
+  - { name: transit, description: GTFS static / GTFS-RT tenant feeds and alerts }
+  - { name: MRV, description: IMO DCS / EU MRV monitoring, reporting and verification }
+  - { name: safety, description: FSC/PSC inspections and marine casualty investigations }
+  - { name: SAR, description: Search-and-rescue incident coordination }
+  - { name: status, description: Service status and liveness }
 paths:
-  /vessels:
+  /v1/geo/vessels:
     get:
       summary: Latest vessel positions inside a bounding box
       operationId: listVessels
@@ -53,7 +66,7 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthenticated' }
         '403': { $ref: '#/components/responses/Forbidden' }
-  /vessels/{mmsi}:
+  /v1/geo/vessels/{mmsi}:
     get:
       summary: Vessel-360 (latest position + current static + recent zones)
       operationId: vessel360
@@ -73,7 +86,7 @@ paths:
                 $ref: '#/components/schemas/Vessel360'
         '404': { $ref: '#/components/responses/NotFound' }
         '401': { $ref: '#/components/responses/Unauthenticated' }
-  /vessels/{mmsi}/track:
+  /v1/geo/vessels/{mmsi}/track:
     get:
       summary: Track replay as GeoJSON LineString (ST_MakeLine window)
       operationId: vesselTrack
@@ -101,7 +114,7 @@ paths:
                 type: object
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthenticated' }
-  /zones:
+  /v1/geo/zones:
     get:
       summary: List tenant geofence zones (clearance-filtered)
       operationId: listZones
@@ -142,7 +155,7 @@ paths:
           description: Draft zone created
         '400': { $ref: '#/components/responses/BadRequest' }
         '403': { $ref: '#/components/responses/Forbidden' }
-  /zones/{id}/approve:
+  /v1/geo/zones/{id}/approve:
     post:
       summary: Approve a draft zone (checker; maker != checker, four-eyes)
       operationId: approveZone
@@ -157,7 +170,7 @@ paths:
         '409':
           description: Maker attempted self-approval or zone not in draft
         '403': { $ref: '#/components/responses/Forbidden' }
-  /zones/{id}/vessels:
+  /v1/geo/zones/{id}/vessels:
     get:
       summary: Vessels currently inside an approved zone
       operationId: vesselsInZone
@@ -174,7 +187,7 @@ paths:
           description: Clearance-filtered vessels inside the zone
         '401': { $ref: '#/components/responses/Unauthenticated' }
         '403': { $ref: '#/components/responses/Forbidden' }
-  /sos:
+  /v1/geo/sos:
     get:
       summary: SOS alerts (requires RESTRICTED or higher clearance)
       operationId: listSOS
@@ -195,7 +208,7 @@ paths:
                     items:
                       $ref: '#/components/schemas/SOSAlert'
         '403': { $ref: '#/components/responses/Forbidden' }
-  /sos/{id}/acknowledge:
+  /v1/geo/sos/{id}/acknowledge:
     post:
       summary: Acknowledge a RAISED SOS alert (geo-sos-reader/geo-admin + RESTRICTED clearance)
       operationId: acknowledgeSOS
@@ -231,7 +244,7 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '409':
           description: Illegal lifecycle transition from the current state
-  /sos/{id}/resolve:
+  /v1/geo/sos/{id}/resolve:
     post:
       summary: Resolve an SOS alert (geo-sos-reader/geo-admin + RESTRICTED clearance)
       operationId: resolveSOS
@@ -266,7 +279,7 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '409':
           description: Illegal lifecycle transition from the current state
-  /app-reports:
+  /v1/geo/app-reports:
     post:
       summary: Tier-0 mobile outbox flush (position report or SOS)
       operationId: flushAppReport
@@ -287,7 +300,7 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '409':
           description: outboxId already used with a different payload
-  /berths/recommendation:
+  /v1/geo/berths/recommendation:
     post:
       summary: Shadow-mode berth-allocation policy recommendation (Phase 18)
       operationId: berthRecommendation
@@ -344,7 +357,7 @@ paths:
             (ml-stack 409 passthrough — no promoted policy), SCORING_UNAVAILABLE
             (scorer failure) or RECOMMENDATION_LOG_FAILED (fail-closed reward
             trail).
-  /routes/advice:
+  /v1/geo/routes/advice:
     post:
       summary: Shadow-mode route-advice policy ranking (Phase 18)
       operationId: routeAdvice
@@ -379,6 +392,1614 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '503':
           description: RECOMMENDATION_UNCONFIGURED / POLICY_UNTRAINED / SCORING_UNAVAILABLE / RECOMMENDATION_LOG_FAILED
+  /v1/device-provisioning/requests:
+    post:
+      tags: [devices]
+      summary: Create a device provisioning request (maker)
+      description: >-
+        Registers a new fleet device as pending; a checker must approve it before the one-time activation se
+        cret is issued. Four-eyes: maker != approver.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [kind, ownerAgency, publicKey]
+              properties:
+                kind: { type: string }
+                ownerAgency: { type: string }
+                label: { type: string }
+                publicKey: { type: string, description: Device Ed25519 public key (base64) }
+                metadata: { type: object, additionalProperties: { type: string } }
+      responses:
+        '201':
+          description: Provisioning request created (pending approval).
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409':
+          description: State conflict (illegal lifecycle transition or idempotency conflict)
+  /v1/device-provisioning/requests/{id}:
+    get:
+      tags: [devices]
+      summary: Get a provisioning request
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Success.
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/device-provisioning/requests/{id}/approve:
+    post:
+      tags: [devices]
+      summary: Approve a provisioning request (checker)
+      description: >-
+        Issues the one-time activation secret for the approved device. Maker != checker.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Approved; returns the one-time activation secret.
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409':
+          description: State conflict (illegal lifecycle transition or idempotency conflict)
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/device-provisioning/requests/{id}/reject:
+    post:
+      tags: [devices]
+      summary: Reject a provisioning request (checker)
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Request rejected.
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409':
+          description: State conflict (illegal lifecycle transition or idempotency conflict)
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/devices:
+    get:
+      tags: [devices]
+      summary: List registered fleet devices (tenant-scoped)
+      responses:
+        '200':
+          description: Success.
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /v1/devices/{id}:
+    get:
+      tags: [devices]
+      summary: Get a device record
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Success.
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/devices/{id}/status:
+    post:
+      tags: [devices]
+      summary: Set device administrative status (admin)
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status: { type: string, description: e.g. active, suspended, decommissioned }
+      responses:
+        '200':
+          description: Success.
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409':
+          description: State conflict (illegal lifecycle transition or idempotency conflict)
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/devices/{id}/rotate:
+    post:
+      tags: [devices]
+      summary: Request device key rotation (maker)
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [publicKey]
+              properties:
+                publicKey: { type: string, description: New Ed25519 public key (base64) }
+      responses:
+        '201':
+          description: Rotation request created; old key remains valid for the grace window (GEO_DEVICE_KEY_GRACE, default 24h) after approval.
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409':
+          description: State conflict (illegal lifecycle transition or idempotency conflict)
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/devices/{id}/rotate/{requestId}/approve:
+    post:
+      tags: [devices]
+      summary: Approve a key-rotation request (checker)
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+        - name: requestId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Rotation approved; grace window starts.
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409':
+          description: State conflict (illegal lifecycle transition or idempotency conflict)
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/devices/firmware-releases:
+    post:
+      tags: [devices]
+      summary: Publish a signed firmware release manifest (admin)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [kind, version, artifactSha256, artifactUrl]
+              properties:
+                kind: { type: string }
+                version: { type: string }
+                artifactSha256: { type: string }
+                artifactUrl: { type: string }
+                rolloutPercent: { type: integer, minimum: 0, maximum: 100 }
+                minEpoch: { type: integer }
+      responses:
+        '201':
+          description: Firmware release registered; OTA manifests are JWS-EdDSA signed by the service key.
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409':
+          description: State conflict (illegal lifecycle transition or idempotency conflict)
+  /v1/devices/{id}/telemetry:
+    post:
+      tags: [devices]
+      summary: Ingest device telemetry (device-authenticated)
+      description: >-
+        Device-authenticated ingest: the device proves identity with its Ed25519 signed envelope, not a plat
+        form principal token. Telemetry is validated, deduplicated and folded into the position plane; failu
+        res dead-letter.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: Ed25519-signed device envelope carrying the telemetry payload
+      responses:
+        '202':
+          description: Telemetry accepted for processing.
+        '400':
+          description: Malformed envelope or payload.
+        '401':
+          description: Device signature/proof verification failed.
+        '409':
+          description: Conflicting replay.
+  /v1/devices/{id}/firmware:
+    get:
+      tags: [devices]
+      summary: Fetch the signed OTA firmware manifest (device-authenticated)
+      description: >-
+        Device-authenticated. Returns the current JWS-EdDSA-signed OTA manifest for the device's kind honori
+        ng rolloutPercent/minEpoch gating.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Signed firmware manifest.
+        '401':
+          description: Device authentication failed.
+        '404':
+          description: No release applicable.
+  /v1/devices/mqtt-auth:
+    post:
+      tags: [devices]
+      summary: EMQX MQTT auth hook (device-authenticated)
+      description: >-
+        EMQX HTTP auth callback: validates the MQTT client's device credential against the fleet registry. F
+        ail-closed.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                clientid: { type: string }
+                username: { type: string }
+                password: { type: string }
+      responses:
+        '200':
+          description: Auth decision (result allow/deny per EMQX HTTP auth contract).
+        '401':
+          description: Credential rejected.
+  /v1/devices/activate:
+    post:
+      tags: [devices]
+      summary: Activate a provisioned device (one-time secret)
+      description: >-
+        Exchanges the one-time activation secret from provisioning approval for device activation. No platfo
+        rm principal token.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [requestId, activationSecret]
+              properties:
+                requestId: { type: string }
+                activationSecret: { type: string }
+      responses:
+        '200':
+          description: Device activated.
+        '401':
+          description: Invalid or consumed activation secret.
+        '409':
+          description: Already activated.
+  /v1/devices/provisioning-requests/{id}:
+    get:
+      tags: [devices]
+      summary: Get a provisioning request (alias under /v1/devices)
+      description: >-
+        Same resource as /v1/device-provisioning/requests/{id}; kept on a literal prefix to avoid Go ServeMu
+        x pattern ambiguity with /v1/devices/{id}/firmware.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Success.
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/geo/fences:
+    get:
+      tags: [fences-v2]
+      summary: List versioned geofences (WP-10 fence v2)
+      description: >-
+        Responses carry provenance {source, asOf, stale, staleNote}.
+      responses:
+        '200':
+          description: Success.
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      tags: [fences-v2]
+      summary: Create a versioned geofence (maker)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [geofenceId, name, classification, verticesMicros]
+              properties:
+                geofenceId: { type: string }
+                name: { type: string }
+                classification: { $ref: '#/components/schemas/Classification' }
+                verticesMicros: { type: array, items: { type: array, items: { type: integer, format: int32 } }, description: Polygon vertices as (latMicros, lonMicros) pairs }
+                dwellThresholdSeconds: { type: integer, minimum: 0 }
+                dwellSpeedGateMilliknots: { type: integer, minimum: 0 }
+                zoneCategory: { type: string }
+      responses:
+        '201':
+          description: Fence version 1 created.
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409':
+          description: State conflict (illegal lifecycle transition or idempotency conflict)
+  /v1/geo/fences/{id}:
+    get:
+      tags: [fences-v2]
+      summary: Fence version history
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Success.
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/geo/fences/{id}/events:
+    get:
+      tags: [fences-v2]
+      summary: Fence transition events for a geofence
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Success.
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /v1/geo/fences/{id}/versions:
+    post:
+      tags: [fences-v2]
+      summary: Create a new version of a fence (maker)
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [geofenceId, name, classification, verticesMicros]
+              properties:
+                geofenceId: { type: string }
+                name: { type: string }
+                classification: { $ref: '#/components/schemas/Classification' }
+                verticesMicros: { type: array, items: { type: array, items: { type: integer, format: int32 } }, description: Polygon vertices as (latMicros, lonMicros) pairs }
+                dwellThresholdSeconds: { type: integer, minimum: 0 }
+                dwellSpeedGateMilliknots: { type: integer, minimum: 0 }
+                zoneCategory: { type: string }
+      responses:
+        '201':
+          description: New fence version created.
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409':
+          description: State conflict (illegal lifecycle transition or idempotency conflict)
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/geo/fences/{id}/retire:
+    post:
+      tags: [fences-v2]
+      summary: Retire a fence (checker)
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Success.
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409':
+          description: State conflict (illegal lifecycle transition or idempotency conflict)
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/geo/fences/evaluate:
+    post:
+      tags: [fences-v2]
+      summary: Evaluate positions against active fences (ingest role)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [positions]
+              properties:
+                positions:
+                  type: array
+                  items:
+                    type: object
+                    required: [vesselRef, latitudeMicros, longitudeMicros]
+                    properties:
+                      vesselRef: { type: string }
+                      latitudeMicros: { type: integer, format: int32 }
+                      longitudeMicros: { type: integer, format: int32 }
+                      speedMilliknots: { type: integer, format: int32 }
+                      observedAt: { type: string, format: date-time }
+      responses:
+        '200':
+          description: Evaluation results (enter/exit/dwell transitions per position).
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409':
+          description: State conflict (illegal lifecycle transition or idempotency conflict)
+  /v1/geo/vessels/nearest:
+    get:
+      tags: [vessels]
+      summary: Nearest vessels to a point
+      description: >-
+        Clearance-filtered nearest-neighbour lookup over latest positions.
+      parameters:
+        - name: latMicros
+          in: query
+          required: true
+          schema: { type: integer, format: int32 }
+        - name: lonMicros
+          in: query
+          required: true
+          schema: { type: integer, format: int32 }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 10 }
+      responses:
+        '200':
+          description: Success.
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+  /v1/geo/vessels/density:
+    get:
+      tags: [density]
+      summary: Server-side vessel-density grid over a bbox
+      description: >-
+        Grid aggregation over latest_positions (G3). Only occupied cells are returned; an absent cell means 
+        'no recorded vessel at the caller's clearance', never a synthesized zero. Cells are axis-aligned mic
+        ro-degree squares converted at the equatorial reference (1 deg ~ 111320 m), so they narrow toward th
+        e poles; the approximation is documented on the response. Carries provenance {source, asOf, stale}.
+      parameters:
+        - name: bbox
+          in: query
+          required: true
+          schema: { type: string }
+          description: minLon,minLat,maxLon,maxLat in micro-degrees
+        - name: cellSizeMeters
+          in: query
+          schema: { type: number, minimum: 100, maximum: 100000, default: 5000 }
+      responses:
+        '200':
+          description: Success.
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+  /v1/geo/tracks/{mmsi}:
+    get:
+      tags: [vessels]
+      summary: Historical track points for a vessel (WP-10)
+      description: >-
+        Clearance-filtered track query with provenance metadata.
+      parameters:
+        - name: mmsi
+          in: path
+          required: true
+          schema: { type: string, pattern: '^[0-9]{9}$' }
+        - name: from
+          in: query
+          required: true
+          schema: { type: string, format: date-time }
+        - name: to
+          in: query
+          required: true
+          schema: { type: string, format: date-time }
+      responses:
+        '200':
+          description: Success.
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+  /v1/geo/ports/{code}/approaches:
+    get:
+      tags: [vessels]
+      summary: Vessels currently approaching a port
+      parameters:
+        - name: code
+          in: path
+          required: true
+          schema: { type: string }
+          description: Port code
+      responses:
+        '200':
+          description: Success.
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /v1/geo/ports/{code}/congestion/forecast:
+    get:
+      tags: [density]
+      summary: Port congestion forecast from queue observations
+      description: >-
+        Forecast derived from recorded queue observations; carries provenance and reports stale data honestl
+        y.
+      parameters:
+        - name: code
+          in: path
+          required: true
+          schema: { type: string }
+          description: Port code
+      responses:
+        '200':
+          description: Success.
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /v1/geo/ports/{code}/queue-observations:
+    post:
+      tags: [density]
+      summary: Record a port queue observation (ingest role)
+      parameters:
+        - name: code
+          in: path
+          required: true
+          schema: { type: string }
+          description: Port code
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: Queue observation (observed queue length/dwell at a timestamp)
+      responses:
+        '201':
+          description: Observation recorded.
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409':
+          description: State conflict (illegal lifecycle transition or idempotency conflict)
+  /v1/geo/stream:
+    get:
+      tags: [stream]
+      summary: Server-Sent Events fan-out of vessel positions and fence transitions
+      description: >-
+        SSE stream of validated geo.vessel-position.v1 and geo.geofence-event.v1 events, clearance-filtered 
+        exactly like the REST reads. Notifications only: the REST read model remains the source of truth — r
+        e-poll to resync after any gap. Answers 503 REALTIME_UNCONFIGURED when GEO_SSE_ENABLED is not true.
+      responses:
+        '200':
+          description: text/event-stream of clearance-filtered events.
+        '401':
+          description: Missing or invalid authentication.
+        '403':
+          description: Insufficient role.
+        '503':
+          description: "REALTIME_UNCONFIGURED: SSE fan-out disabled."
+  /v1/geo/stream/status:
+    get:
+      tags: [stream]
+      summary: Realtime stream posture (capability discovery)
+      description: >-
+        Reports {enabled, eventTypes, subscribers?, contract} truthfully so clients can discover whether the
+         SSE fan-out is wired.
+      responses:
+        '200':
+          description: Success.
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /v1/geo/capabilities:
+    get:
+      tags: [vessels]
+      summary: Capability discovery document
+      description: >-
+        Honest feature/config flag report (connectors, SSE, ML proxy, PCS import, etc.) so integrators can d
+        etect deployment posture.
+      responses:
+        '200':
+          description: Success.
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /v1/geo/transit/alerts:
+    post:
+      tags: [transit]
+      summary: Create a transit service alert (transit admin)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: GTFS-RT alert payload (tenant-scoped)
+      responses:
+        '201':
+          description: Alert created and included in the tenant GTFS-RT alerts feed.
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409':
+          description: State conflict (illegal lifecycle transition or idempotency conflict)
+  /feeds/gtfs.zip:
+    get:
+      tags: [transit]
+      summary: Tenant GTFS static archive
+      description: >-
+        Deterministic GTFS static zip for the caller's tenant with a strong ETag; unchanged payloads answer 
+        304.
+      responses:
+        '200':
+          description: Success.
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /feeds/gtfs-rt/vehiclepositions.pb:
+    get:
+      tags: [transit]
+      summary: Tenant GTFS-Realtime vehiclepositions feed (protobuf)
+      description: >-
+        Tenant-scoped GTFS-RT feed; embedded positions are clearance-governed. Strong ETag; 304 when unchang
+        ed.
+      responses:
+        '200':
+          description: Success.
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /feeds/gtfs-rt/tripupdates.pb:
+    get:
+      tags: [transit]
+      summary: Tenant GTFS-Realtime tripupdates feed (protobuf)
+      description: >-
+        Tenant-scoped GTFS-RT feed; embedded positions are clearance-governed. Strong ETag; 304 when unchang
+        ed.
+      responses:
+        '200':
+          description: Success.
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /feeds/gtfs-rt/alerts.pb:
+    get:
+      tags: [transit]
+      summary: Tenant GTFS-Realtime alerts feed (protobuf)
+      description: >-
+        Tenant-scoped GTFS-RT feed; embedded positions are clearance-governed. Strong ETag; 304 when unchang
+        ed.
+      responses:
+        '200':
+          description: Success.
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /v1/status:
+    get:
+      tags: [status]
+      summary: Service status (MRV surface health)
+      responses:
+        '200':
+          description: Status document.
+        '401':
+          description: Missing or invalid authentication.
+  /healthz:
+    get:
+      tags: [status]
+      summary: Liveness probe
+      security: []  # unauthenticated liveness probe
+      responses:
+        '200':
+          description: Service is alive.
+  /v1/mrv/ships:
+    post:
+      tags: [MRV]
+      summary: Register a ship for MRV monitoring
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [imoNumber]
+              properties:
+                imoNumber: { type: string }
+                shipName: { type: string }
+      responses:
+        '201':
+          description: Ship registered.
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409':
+          description: State conflict (illegal lifecycle transition or idempotency conflict)
+  /v1/mrv/ships/{imo}/monitoring-plans:
+    put:
+      tags: [MRV]
+      summary: Create/replace a ship monitoring plan
+      parameters:
+        - name: imo
+          in: path
+          required: true
+          schema: { type: string }
+          description: IMO ship number
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: Monitoring plan (methods, emission sources); persists as a draft pending confirmation
+      responses:
+        '200':
+          description: Success.
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409':
+          description: State conflict (illegal lifecycle transition or idempotency conflict)
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/mrv/monitoring-plans/{id}/confirm:
+    post:
+      tags: [MRV]
+      summary: Confirm a draft monitoring plan
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Success.
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409':
+          description: State conflict (illegal lifecycle transition or idempotency conflict)
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/mrv/ships/{imo}/fuel-reports:
+    post:
+      tags: [MRV]
+      summary: Submit a fuel-consumption report
+      parameters:
+        - name: imo
+          in: path
+          required: true
+          schema: { type: string }
+          description: IMO ship number
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reportId, imoNumber, periodFrom, periodTo, consumer, fuelGrade, method, fuelTonnesMilli, evidenceDigestSha256, reportedAt]
+              properties:
+                reportId: { type: string }
+                imoNumber: { type: string }
+                externalReference: { type: string }
+                periodFrom: { type: string, format: date-time }
+                periodTo: { type: string, format: date-time }
+                consumer: { type: string }
+                fuelGrade: { type: string }
+                method: { type: string }
+                fuelTonnesMilli: { type: integer, format: int64 }
+                distanceNmMilli: { type: integer, format: int64 }
+                hoursUnderwayMinutes: { type: integer, format: int64 }
+                bdnReference: { type: string }
+                evidenceDigestSha256: { type: string }
+                reportedAt: { type: string, format: date-time }
+      responses:
+        '201':
+          description: Fuel report recorded (idempotent on reportId).
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409':
+          description: State conflict (illegal lifecycle transition or idempotency conflict)
+  /v1/mrv/ships/{imo}/voyages:
+    post:
+      tags: [MRV]
+      summary: Record a voyage (BOSP/EOSP)
+      parameters:
+        - name: imo
+          in: path
+          required: true
+          schema: { type: string }
+          description: IMO ship number
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [voyageId, imoNumber, source, recordedAt]
+              properties:
+                voyageId: { type: string }
+                imoNumber: { type: string }
+                source: { type: string }
+                bospAt: { type: string, format: date-time }
+                bospPortCode: { type: string }
+                eospAt: { type: string, format: date-time }
+                eospPortCode: { type: string }
+                cargoTonnesMilli: { type: integer, format: int64 }
+                ladenDistanceNmMilli: { type: integer, format: int64 }
+                geofenceEvidenceDigestSha256: { type: array, items: { type: string } }
+                recordedAt: { type: string, format: date-time }
+      responses:
+        '201':
+          description: Voyage recorded (idempotent on voyageId).
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409':
+          description: State conflict (illegal lifecycle transition or idempotency conflict)
+  /v1/mrv/ships/{imo}/activity-estimate:
+    get:
+      tags: [MRV]
+      summary: AIS-derived activity estimate for a ship/period
+      description: >-
+        Distance/hours underway estimated from the position plane; sets insufficientCoverage when AIS covera
+        ge is too thin rather than fabricating precision.
+      parameters:
+        - name: imo
+          in: path
+          required: true
+          schema: { type: string }
+          description: IMO ship number
+        - name: from
+          in: query
+          required: true
+          schema: { type: string, format: date-time }
+        - name: to
+          in: query
+          required: true
+          schema: { type: string, format: date-time }
+      responses:
+        '200':
+          description: Success.
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+  /v1/mrv/ships/{imo}/voyages/{voyageId}/emissions:
+    get:
+      tags: [MRV]
+      summary: Emissions breakdown for a voyage
+      parameters:
+        - name: imo
+          in: path
+          required: true
+          schema: { type: string }
+          description: IMO ship number
+        - name: voyageId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Success.
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/mrv/ships/{imo}/emissions/by-voyage:
+    get:
+      tags: [MRV]
+      summary: Per-voyage emissions for a ship
+      parameters:
+        - name: imo
+          in: path
+          required: true
+          schema: { type: string }
+          description: IMO ship number
+      responses:
+        '200':
+          description: Success.
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /v1/mrv/reports/annual/{imo}/{year}/compile:
+    post:
+      tags: [MRV]
+      summary: Compile the annual MRV report for a ship/year
+      parameters:
+        - name: imo
+          in: path
+          required: true
+          schema: { type: string }
+          description: IMO ship number
+        - name: year
+          in: path
+          required: true
+          schema: { type: integer }
+          description: Calendar year
+      responses:
+        '201':
+          description: Annual report compiled (draft) with factor-set digest and attained/required CII.
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409':
+          description: State conflict (illegal lifecycle transition or idempotency conflict)
+  /v1/mrv/reports/annual/{id}/submit:
+    post:
+      tags: [MRV]
+      summary: Submit an annual report for verification
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Success.
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409':
+          description: State conflict (illegal lifecycle transition or idempotency conflict)
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/mrv/reports/annual/{id}/decisions:
+    post:
+      tags: [MRV]
+      summary: Record a verifier decision on an annual report
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [verificationId, annualReportId, decision, reasonCode, decidedAt]
+              properties:
+                verificationId: { type: string }
+                annualReportId: { type: string }
+                decision: { type: string }
+                reasonCode: { type: string }
+                aisCrosscheckDigestSha256: { type: string }
+                decidedAt: { type: string, format: date-time }
+      responses:
+        '200':
+          description: Success.
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409':
+          description: State conflict (illegal lifecycle transition or idempotency conflict)
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/mrv/reports/annual/{id}/soc:
+    post:
+      tags: [MRV]
+      summary: Issue a Statement of Compliance for a verified annual report
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [socId, annualReportId, imoNumber, calendarYear, artifactDigestSha256, issuedAt]
+              properties:
+                socId: { type: string }
+                annualReportId: { type: string }
+                imoNumber: { type: string }
+                calendarYear: { type: integer }
+                artifactDigestSha256: { type: string }
+                issuedAt: { type: string, format: date-time }
+      responses:
+        '201':
+          description: SOC issued.
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409':
+          description: State conflict (illegal lifecycle transition or idempotency conflict)
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/mrv/ships/{imo}/cii/{year}:
+    get:
+      tags: [MRV]
+      summary: Attained/required CII and rating for a ship/year
+      parameters:
+        - name: imo
+          in: path
+          required: true
+          schema: { type: string }
+          description: IMO ship number
+        - name: year
+          in: path
+          required: true
+          schema: { type: integer }
+      responses:
+        '200':
+          description: Success.
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/mrv/reports/annual/{id}/artifact:
+    get:
+      tags: [MRV]
+      summary: Download the annual report artifact
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Success.
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/mrv/factors:
+    get:
+      tags: [MRV]
+      summary: Active emission-factor set (with digest)
+      responses:
+        '200':
+          description: Success.
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /v1/safety/checklist-templates:
+    get:
+      tags: [safety]
+      summary: List inspection checklist templates
+      responses:
+        '200':
+          description: Success.
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      tags: [safety]
+      summary: Create a checklist template (inspector)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: Checklist template definition
+      responses:
+        '201':
+          description: Template created.
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409':
+          description: State conflict (illegal lifecycle transition or idempotency conflict)
+  /v1/safety/inspections:
+    get:
+      tags: [safety]
+      summary: List FSC/PSC inspections
+      responses:
+        '200':
+          description: Success.
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      tags: [safety]
+      summary: Open an FSC/PSC inspection (inspector)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: Inspection record (vessel ref, port, checklist template)
+      responses:
+        '201':
+          description: Inspection opened.
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409':
+          description: State conflict (illegal lifecycle transition or idempotency conflict)
+  /v1/safety/inspections/{id}:
+    get:
+      tags: [safety]
+      summary: Get an inspection
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Success.
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/safety/inspections/{id}/transition:
+    post:
+      tags: [safety]
+      summary: Transition an inspection lifecycle state
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [transition]
+              properties:
+                transition: { type: string }
+                note: { type: string }
+      responses:
+        '200':
+          description: Success.
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409':
+          description: State conflict (illegal lifecycle transition or idempotency conflict)
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/safety/inspections/{id}/deficiencies:
+    get:
+      tags: [safety]
+      summary: List deficiencies recorded on an inspection
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Success.
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      tags: [safety]
+      summary: Record a deficiency on an inspection
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: Deficiency (code, description, action, deadline)
+      responses:
+        '201':
+          description: Deficiency recorded.
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409':
+          description: State conflict (illegal lifecycle transition or idempotency conflict)
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/safety/deficiencies/{id}/transition:
+    post:
+      tags: [safety]
+      summary: Transition a deficiency lifecycle state
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [transition]
+              properties:
+                transition: { type: string }
+                note: { type: string }
+      responses:
+        '200':
+          description: Success.
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409':
+          description: State conflict (illegal lifecycle transition or idempotency conflict)
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/safety/investigations:
+    get:
+      tags: [safety]
+      summary: List marine casualty investigations
+      responses:
+        '200':
+          description: Success.
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      tags: [safety]
+      summary: Open a marine casualty investigation (investigator)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: Investigation record (casualty type, vessel refs, severity)
+      responses:
+        '201':
+          description: Investigation opened.
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409':
+          description: State conflict (illegal lifecycle transition or idempotency conflict)
+  /v1/safety/investigations/{id}:
+    get:
+      tags: [safety]
+      summary: Get an investigation
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Success.
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/safety/investigations/{id}/transition:
+    post:
+      tags: [safety]
+      summary: Transition an investigation lifecycle state
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [transition]
+              properties:
+                transition: { type: string }
+                note: { type: string }
+      responses:
+        '200':
+          description: Success.
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409':
+          description: State conflict (illegal lifecycle transition or idempotency conflict)
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/safety/investigations/{id}/evidence:
+    get:
+      tags: [safety]
+      summary: List evidence of an investigation
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Success.
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      tags: [safety]
+      summary: Add a evidence item to an investigation
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: Evidence item payload
+      responses:
+        '201':
+          description: Evidence item recorded.
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409':
+          description: State conflict (illegal lifecycle transition or idempotency conflict)
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/safety/investigations/{id}/findings:
+    get:
+      tags: [safety]
+      summary: List findings of an investigation
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Success.
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      tags: [safety]
+      summary: Add a finding to an investigation
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: Finding payload
+      responses:
+        '201':
+          description: Finding recorded.
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409':
+          description: State conflict (illegal lifecycle transition or idempotency conflict)
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/safety/investigations/{id}/recommendations:
+    get:
+      tags: [safety]
+      summary: List recommendations of an investigation
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Success.
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      tags: [safety]
+      summary: Add a safety recommendation to an investigation
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: Safety recommendation payload
+      responses:
+        '201':
+          description: Safety recommendation recorded.
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409':
+          description: State conflict (illegal lifecycle transition or idempotency conflict)
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/safety/recommendations/{id}/transition:
+    post:
+      tags: [safety]
+      summary: Transition a safety recommendation lifecycle state
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [transition]
+              properties:
+                transition: { type: string }
+                note: { type: string }
+      responses:
+        '200':
+          description: Success.
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409':
+          description: State conflict (illegal lifecycle transition or idempotency conflict)
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/safety/sar:
+    get:
+      tags: [SAR]
+      summary: List search-and-rescue incidents
+      responses:
+        '200':
+          description: Success.
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      tags: [SAR]
+      summary: Open a SAR incident (sar-coordinator)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: SAR incident (position micro-degrees, description, linked SOS id)
+      responses:
+        '201':
+          description: SAR incident opened.
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409':
+          description: State conflict (illegal lifecycle transition or idempotency conflict)
+  /v1/safety/sar/{id}:
+    get:
+      tags: [SAR]
+      summary: Get a SAR incident
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Success.
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/safety/sar/{id}/transition:
+    post:
+      tags: [SAR]
+      summary: Transition a SAR incident lifecycle state
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [transition]
+              properties:
+                transition: { type: string }
+                note: { type: string }
+      responses:
+        '200':
+          description: Success.
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409':
+          description: State conflict (illegal lifecycle transition or idempotency conflict)
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/safety/sar/{id}/taskings:
+    post:
+      tags: [SAR]
+      summary: Task a unit on a SAR incident
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: Tasking (unit ref, instructions, area)
+      responses:
+        '201':
+          description: Tasking created.
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409':
+          description: State conflict (illegal lifecycle transition or idempotency conflict)
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/safety/sar-taskings/{id}/transition:
+    post:
+      tags: [SAR]
+      summary: Transition a SAR tasking lifecycle state
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [transition]
+              properties:
+                transition: { type: string }
+                note: { type: string }
+      responses:
+        '200':
+          description: Success.
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409':
+          description: State conflict (illegal lifecycle transition or idempotency conflict)
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/safety/sar/{id}/comms:
+    get:
+      tags: [SAR]
+      summary: List SAR incident comms log entries
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Success.
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      tags: [SAR]
+      summary: Append a comms log entry to a SAR incident
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: Comms entry (channel, summary, timestamp)
+      responses:
+        '201':
+          description: Comms entry appended.
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409':
+          description: State conflict (illegal lifecycle transition or idempotency conflict)
+        '404': { $ref: '#/components/responses/NotFound' }
 components:
   securitySchemes:
     bearerAuth:
