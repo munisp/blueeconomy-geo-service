@@ -29,6 +29,7 @@ import (
 	"time"
 
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+	"golang.org/x/sync/singleflight"
 )
 
 // Principal is the authenticated caller: the Keycloak subject, its roles,
@@ -124,9 +125,14 @@ type OIDCAuthenticator struct {
 	Audience string
 	JWKSURL  *url.URL
 
-	client   *http.Client
-	mu       sync.RWMutex
-	keys     map[string]*rsa.PublicKey
+	client *http.Client
+	mu     sync.RWMutex
+	keys   map[string]*rsa.PublicKey
+	// flight coalesces concurrent JWKS refreshes: after the 5-minute TTL a
+	// burst of requests must not all hit Keycloak — exactly one loadKeys
+	// HTTP fetch runs, the rest share its result (caching semantics and
+	// the 5-minute TTL are unchanged).
+	flight   singleflight.Group
 	loadedAt time.Time
 }
 
@@ -276,7 +282,19 @@ func (auth *OIDCAuthenticator) key(kid string, refresh bool) (*rsa.PublicKey, er
 	if !refresh {
 		return nil, errors.New("JWT key is not trusted")
 	}
-	if err := auth.loadKeys(); err != nil {
+	_, err, _ := auth.flight.Do("jwks-refresh", func() (any, error) {
+		// Re-check inside the flight: the refresh leader may already have
+		// loaded a key set that satisfies this caller while it was queued.
+		auth.mu.RLock()
+		_, have := auth.keys[kid]
+		fresh := time.Since(auth.loadedAt) < 5*time.Minute
+		auth.mu.RUnlock()
+		if have && fresh {
+			return nil, nil
+		}
+		return nil, auth.loadKeys()
+	})
+	if err != nil {
 		return nil, fmt.Errorf("load OIDC JWKS: %w", err)
 	}
 	auth.mu.RLock()

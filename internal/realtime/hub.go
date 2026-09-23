@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/munisp/blueeconomy-geo-service/internal/metrics"
@@ -40,14 +41,29 @@ type subscriber struct {
 	cleared  map[string]struct{}
 }
 
+// hubShardCount bounds lock contention: subscribers are striped over this
+// many shards, each with its own mutex, so Publish fan-out and
+// Subscribe/Unsubscribe serialize only within one shard (1/16 of the
+// subscriber base) instead of globally. Sends happen under the shard lock,
+// so closing a channel on drop/unsubscribe can never race a send.
+const hubShardCount = 16
+
+type hubShard struct {
+	mu   sync.Mutex
+	subs map[uint64]subscriber
+}
+
 // Hub is a goroutine-safe broadcast hub with bounded per-subscriber queues.
 type Hub struct {
-	mu      sync.Mutex
-	subs    map[uint64]subscriber
-	nextID  uint64
+	shards  [hubShardCount]hubShard
+	nextID  atomic.Uint64
 	queue   int
 	metrics *metrics.Registry
 	now     func() time.Time
+}
+
+func (hub *Hub) shard(id uint64) *hubShard {
+	return &hub.shards[id%hubShardCount]
 }
 
 // NewHub wires the hub against the metrics registry.
@@ -55,7 +71,11 @@ func NewHub(registry *metrics.Registry) (*Hub, error) {
 	if registry == nil {
 		return nil, errors.New("realtime hub metrics registry is required")
 	}
-	return &Hub{subs: map[uint64]subscriber{}, queue: 64, metrics: registry, now: time.Now}, nil
+	hub := &Hub{queue: 64, metrics: registry, now: time.Now}
+	for i := range hub.shards {
+		hub.shards[i].subs = map[uint64]subscriber{}
+	}
+	return hub, nil
 }
 
 // Publish fans one event out to every cleared subscriber. Non-blocking: a
@@ -65,27 +85,33 @@ func (hub *Hub) Publish(event Event) {
 	if event.Type == "" {
 		return
 	}
-	hub.mu.Lock()
-	dropped := []uint64{}
-	for id, sub := range hub.subs {
-		if _, ok := sub.cleared[event.Classification]; !ok {
-			continue // clearance floor: the subscriber never sees what REST hides
+	// Per-shard fan-out: each shard is locked only for its own non-blocking
+	// sends, so Subscribe/Unsubscribe on other shards never waits on this
+	// publish and a slow-subscriber drop (close under the same lock) cannot
+	// race a send.
+	dropped := 0
+	count := 0
+	for i := range hub.shards {
+		shard := &hub.shards[i]
+		shard.mu.Lock()
+		for id, sub := range shard.subs {
+			if _, ok := sub.cleared[event.Classification]; !ok {
+				continue // clearance floor: the subscriber never sees what REST hides
+			}
+			select {
+			case sub.events <- event:
+			default:
+				close(sub.events)
+				delete(shard.subs, id)
+				dropped++
+			}
 		}
-		select {
-		case sub.events <- event:
-		default:
-			dropped = append(dropped, id)
-		}
+		count += len(shard.subs)
+		shard.mu.Unlock()
 	}
-	for _, id := range dropped {
-		close(hub.subs[id].events)
-		delete(hub.subs, id)
-	}
-	count := len(hub.subs)
-	hub.mu.Unlock()
 	hub.metrics.Inc("geo_sse_events_total", map[string]string{"event_type": event.Type})
-	if len(dropped) > 0 {
-		hub.metrics.Add("geo_sse_dropped_total", nil, int64(len(dropped)))
+	if dropped > 0 {
+		hub.metrics.Add("geo_sse_dropped_total", nil, int64(dropped))
 	}
 	hub.metrics.Set("geo_sse_subscribers", nil, int64(count))
 }
@@ -98,24 +124,23 @@ func (hub *Hub) Subscribe(clearedLabels []string) (<-chan Event, func()) {
 		cleared[label] = struct{}{}
 	}
 	events := make(chan Event, hub.queue)
-	hub.mu.Lock()
-	hub.nextID++
-	id := hub.nextID
-	hub.subs[id] = subscriber{events: events, cleared: cleared}
-	count := len(hub.subs)
-	hub.mu.Unlock()
+	id := hub.nextID.Add(1)
+	shard := hub.shard(id)
+	shard.mu.Lock()
+	shard.subs[id] = subscriber{events: events, cleared: cleared}
+	shard.mu.Unlock()
+	count := hub.SubscriberCount()
 	hub.metrics.Set("geo_sse_subscribers", nil, int64(count))
 	var once sync.Once
 	cancel := func() {
 		once.Do(func() {
-			hub.mu.Lock()
-			if sub, ok := hub.subs[id]; ok {
+			shard.mu.Lock()
+			if sub, ok := shard.subs[id]; ok {
 				close(sub.events)
-				delete(hub.subs, id)
+				delete(shard.subs, id)
 			}
-			count := len(hub.subs)
-			hub.mu.Unlock()
-			hub.metrics.Set("geo_sse_subscribers", nil, int64(count))
+			shard.mu.Unlock()
+			hub.metrics.Set("geo_sse_subscribers", nil, int64(hub.SubscriberCount()))
 		})
 	}
 	return events, cancel
@@ -123,9 +148,13 @@ func (hub *Hub) Subscribe(clearedLabels []string) (<-chan Event, func()) {
 
 // SubscriberCount reports the live subscriber gauge (status endpoint).
 func (hub *Hub) SubscriberCount() int {
-	hub.mu.Lock()
-	defer hub.mu.Unlock()
-	return len(hub.subs)
+	total := 0
+	for i := range hub.shards {
+		hub.shards[i].mu.Lock()
+		total += len(hub.shards[i].subs)
+		hub.shards[i].mu.Unlock()
+	}
+	return total
 }
 
 // heartbeatInterval keeps proxies and clients alive on quiet feeds.
@@ -198,10 +227,13 @@ func BroadcastPipeline(hub *Hub, metricsRegistry *metrics.Registry) func(eventTy
 
 // Shutdown releases all subscribers (server teardown).
 func (hub *Hub) Shutdown(_ context.Context) {
-	hub.mu.Lock()
-	for id, sub := range hub.subs {
-		close(sub.events)
-		delete(hub.subs, id)
+	for i := range hub.shards {
+		shard := &hub.shards[i]
+		shard.mu.Lock()
+		for id, sub := range shard.subs {
+			close(sub.events)
+			delete(shard.subs, id)
+		}
+		shard.mu.Unlock()
 	}
-	hub.mu.Unlock()
 }
